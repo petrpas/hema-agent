@@ -205,3 +205,8 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# hr-agent runtime data and secrets
+data/
+config.json
+creds.json

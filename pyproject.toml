@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "hr-agent"
+version = "0.1.0"
+description = "HEMA tournament registration enrichment agent"
+requires-python = ">=3.12"
+dependencies = [
+    "anthropic>=0.83.0",
+    "pandas>=3.0",
+    "pydantic>=2.12",
+    "pydantic-ai>=1.62",
+    "gspread>=6.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[project.scripts]
+hr-agent = "hr_agent.main:main"
