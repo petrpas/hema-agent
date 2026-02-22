@@ -1,0 +1,20 @@
+{
+  "tournament_name": "na_duel_2025",
+  "disciplines": {
+    "SA": "Sabre open",
+    "RA": "Rapier open"
+  },
+  "registration_sheet_url": "https://docs.google.com/spreadsheets/d/1KSPo66-zQOarpvOYExHwbM_NuzdMXJYm60jkBf5iA10/edit?usp=sharing",
+  "output_sheet_url": "https://docs.google.com/spreadsheets/d/1zZedXrJfaZQZ2IJvaqNjAO2Be9T8Cot2N6suiw-Z71Y/edit?usp=sharing",
+  "creds_path": "../creds.json",
+  "data_root_dir": "data",
+  "ai_models": {
+    "default": "anthropic:claude-sonnet-4-6",
+    "parse":   "anthropic:claude-sonnet-4-6",
+    "match":   "anthropic:claude-sonnet-4-6",
+    "dedup":   "anthropic:claude-sonnet-4-6",
+    "heal":    "anthropic:claude-sonnet-4-6",
+    "upload":  "anthropic:claude-sonnet-4-6"
+  },
+  "upload_thinking_tokens": 2000
+}
