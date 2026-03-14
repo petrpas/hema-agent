@@ -8,12 +8,13 @@ import unicodedata
 from pathlib import Path
 
 import requests
+from config.tracing import observe
 from pydantic import BaseModel, TypeAdapter
 from pydantic_ai import Agent, ModelSettings
 
 logger = logging.getLogger(__name__)
 
-from config import Config, Step
+from config import RegConfig, Step
 from models import FencerRecord
 from utils import load_fencers_list, save_fencers_list, to_nat_code, FENCERS_MATCHED_FILE, FENCERS_CACHE_FILE
 
@@ -170,7 +171,7 @@ def _prefilter_candidates(
         # Also add any line containing the last name token
         if tokens:
             surname_norm = tokens[-1]
-            for norm, line in index:
+            for norm, _line in index:
                 if surname_norm in norm and norm not in close:
                     close.append(norm)
         for norm_name in close[:top_n]:
@@ -184,7 +185,7 @@ def _prefilter_candidates(
     return "\n".join(candidate_lines)
 
 
-def _call_llm(need_llm: list[FencerRecord], fighters_text: str, config: Config) -> dict[str, dict]:
+def _call_llm(need_llm: list[FencerRecord], fighters_text: str, config: RegConfig) -> dict[str, dict]:
     """Return match info keyed by email."""
     candidates_text = _prefilter_candidates(need_llm, fighters_text)
     logger.info(f"Sending {len(candidates_text.splitlines())} candidate fighters to LLM for {len(need_llm)} fencers ...")
@@ -271,7 +272,8 @@ def _upsert_cache_entry(
             entry.alternative_names_used.append(alt_name)
 
 
-def match_fencers(fencers: list[FencerRecord], config: Config) -> list[FencerRecord]:
+@observe(capture_input=False, capture_output=False)
+def match_fencers(fencers: list[FencerRecord], config: RegConfig) -> list[FencerRecord]:
     """Enrich fencers with hr_id via cache lookup and LLM fuzzy matching."""
     data_dir = config.data_dir
     data_dir.mkdir(parents=True, exist_ok=True)

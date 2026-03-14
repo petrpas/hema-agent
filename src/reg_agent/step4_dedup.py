@@ -2,11 +2,11 @@
 
 import json
 import logging
-from pathlib import Path
 
+from config.tracing import observe
 from pydantic_ai import Agent, ModelSettings
 
-from config import Config, Step
+from config import RegConfig, Step
 from models import FencerRecord
 from utils import load_fencers_list, save_fencers_list, FENCERS_DEDUPED_FILE, FENCERS_DEDUPED_FP_FILE
 
@@ -32,7 +32,7 @@ Default merge rules (apply when no correction intent is found):
 """
 
 
-def _merge_group(records: list[FencerRecord], config: Config) -> FencerRecord:
+def _merge_group(records: list[FencerRecord], config: RegConfig) -> FencerRecord:
     agent = Agent(
         model=config.model(Step.DEDUP),
         model_settings=ModelSettings(temperature=0.0),
@@ -52,7 +52,8 @@ def _fingerprint(fencers: list[FencerRecord]) -> str:
     return str(sorted((f.hr_id or 0, f.name) for f in fencers))
 
 
-def deduplicate_fencers(fencers: list[FencerRecord], config: Config) -> list[FencerRecord]:
+@observe(capture_input=False, capture_output=False)
+def deduplicate_fencers(fencers: list[FencerRecord], config: RegConfig) -> list[FencerRecord]:
     """Merge records sharing the same hr_id. Preserves registration order (first occurrence)."""
     out_path = config.data_dir / FENCERS_DEDUPED_FILE
     fp_path = config.data_dir / FENCERS_DEDUPED_FP_FILE

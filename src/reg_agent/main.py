@@ -1,12 +1,18 @@
 import argparse
 import logging
+import sys
 import time
 from logging import LogRecord
+from pathlib import Path
+
+# Ensure src/ is on sys.path so the config package and step bare-imports all resolve.
+_SRC = Path(__file__).parent.parent
+if str(_SRC) not in sys.path:
+    sys.path.insert(0, str(_SRC))
 
 from dotenv import load_dotenv
 
 from config import load_config
-from utils import load_fencers_list, load_ratings, FENCERS_DEDUPED_FILE
 from step1_download import download_registrations
 from step2_parse import parse_registrations
 from step3_match import match_fencers
@@ -40,14 +46,19 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, handlers=[handler])
     load_dotenv()
 
+    from config.tracing import enabled as _tracing_enabled
+    if _tracing_enabled:
+        from pydantic_ai.agent import Agent
+        Agent.instrument_all()
+
     parser = argparse.ArgumentParser(
         description="Enrich HEMA tournament registrations with HEMA Ratings scores.",
     )
-    parser.add_argument("config", help="Path to config.json")
+    parser.add_argument("config", help="Path to user_config.json")
     args = parser.parse_args()
 
     t0 = time.perf_counter()
-    logger.info("=== hr-agent starting ===")
+    logger.info("=== reg-agent starting ===")
 
     config = load_config(args.config)
     csv_path = download_registrations(config)

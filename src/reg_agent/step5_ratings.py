@@ -8,15 +8,16 @@ import logging
 import traceback
 from datetime import date
 from pathlib import Path
-from typing import Callable
+from collections.abc import Callable
 
 import requests
+from config.tracing import observe
 from pydantic import BaseModel
 from pydantic_ai import Agent, ModelSettings
 
-from config import Config, Step
+from config import RegConfig, Step
 from models import FencerRating, FencerRecord
-from utils import RatingsDict, load_ratings, save_ratings
+from utils import load_ratings, save_ratings
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +100,7 @@ def _save_next_parser(source: str, current_version: int) -> Path:
     return next_path
 
 
-def _heal_parser(current_source: str, tb: str, html: str, current_version: int, config: Config) -> tuple[Callable, str, int]:
+def _heal_parser(current_source: str, tb: str, html: str, current_version: int, config: RegConfig) -> tuple[Callable, str, int]:
     """Ask the LLM to rewrite the broken parser. Saves the result as the next version file."""
     logger.warning("Parser broken — asking LLM to heal ...")
     agent = Agent(
@@ -138,7 +139,8 @@ def _get_fighter_html(hr_id: int, data_dir: Path) -> str:
     return html
 
 
-def fetch_ratings(fencers: list[FencerRecord], config: Config) -> dict[int, dict[str, FencerRating]]:
+@observe(capture_input=False, capture_output=False)
+def fetch_ratings(fencers: list[FencerRecord], config: RegConfig) -> dict[int, dict[str, FencerRating]]:
     """Fetch HEMA Ratings data for all fencers with a known hr_id."""
     data_dir = config.data_dir
     data_dir.mkdir(parents=True, exist_ok=True)

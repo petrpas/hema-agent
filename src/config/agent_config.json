@@ -1,0 +1,16 @@
+{
+  "reg_agent": {
+    "ai_models": {
+      "default": "anthropic:claude-sonnet-4-6",
+      "parse":   "anthropic:claude-haiku-4-5-20251001",
+      "match":   "anthropic:claude-sonnet-4-6",
+      "dedup":   "anthropic:claude-sonnet-4-6",
+      "heal":    "anthropic:claude-sonnet-4-6",
+      "upload":  "anthropic:claude-sonnet-4-6"
+    },
+    "upload_thinking_tokens": 2000,
+    "creds_path": "src/creds.json",
+    "data_root_dir": "data",
+    "batch_sleep": 2
+  }
+}

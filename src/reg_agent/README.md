@@ -1,8 +1,8 @@
-# hr-agent
+# reg-agent
 
 Enriches HEMA tournament registration data with HEMA Ratings scores.
 
-Tournament organizers receive raw sign-ups from a Google Form and need each fencer's current rating and rank before they can set up competition pools. `hr-agent` automates the full process: it downloads the registration sheet, parses and normalises the data, matches every fencer to their HEMA Ratings profile, fetches their current scores, and writes the results back to an output Google Sheet — making only surgical, targeted edits so manual corrections are preserved.
+Tournament organizers receive raw sign-ups from a Google Form and need each fencer's current rating and rank before they can set up competition pools. `reg-agent` automates the full process: it downloads the registration sheet, parses and normalises the data, matches every fencer to their HEMA Ratings profile, fetches their current scores, and writes the results back to an output Google Sheet — making only surgical, targeted edits so manual corrections are preserved.
 
 ## Pipeline
 
@@ -31,7 +31,7 @@ pip install -e .
 
 ## Configuration
 
-Create `src/hr_agent/config.json` (gitignored):
+Create `src/reg_agent/config.json` (gitignored):
 
 ```json
 {
@@ -65,7 +65,7 @@ Create `src/hr_agent/config.json` (gitignored):
 ## Running
 
 ```bash
-cd src/hr_agent
+cd src/reg_agent
 export ANTHROPIC_API_KEY=sk-ant-...
 python main.py config.json
 ```

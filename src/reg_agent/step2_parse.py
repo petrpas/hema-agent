@@ -3,15 +3,17 @@
 import json
 import logging
 import re
+import time
 from pathlib import Path
 
 import pandas as pd
 from jinja2 import Template
+from config.tracing import observe
 from pydantic import BaseModel
 from pydantic_ai import Agent, ModelSettings
 
-from config import Config, Step
-from models import FencerRecord, HemaWeapon, HemaDiscipline
+from config import RegConfig, Step
+from models import FencerRecord
 from utils import (
     load_fencers_list, save_fencers_list,
     REG_VER_DIR, REG_VER_FILE_PTN, REG_VER_FILE_REG,
@@ -55,7 +57,7 @@ Rules:
 2. Only use disciplines present on this tournament, nothing else.
 """)
 
-def _call_llm(df: pd.DataFrame, config: Config) -> list[FencerRecord]:
+def _call_llm(df: pd.DataFrame, config: RegConfig) -> list[FencerRecord]:
 
     agent = Agent(
         model=config.model(Step.PARSE),
@@ -70,6 +72,8 @@ def _call_llm(df: pd.DataFrame, config: Config) -> list[FencerRecord]:
     fencers: list[FencerRecord] = []
 
     for batch_start in range(0, total, BATCH_SIZE):
+        if batch_start > 0:
+            time.sleep(config.batch_sleep)
         batch = records[batch_start:batch_start + BATCH_SIZE]
         end = batch_start + len(batch)
         result = agent.run_sync(
@@ -99,7 +103,8 @@ def _csv_unchanged(new_path: Path, data_dir: Path) -> bool:
     return new_path.read_bytes() == prev.read_bytes()
 
 
-def parse_registrations(csv_path: Path, config: Config) -> list[FencerRecord]:
+@observe(capture_input=False, capture_output=False)
+def parse_registrations(csv_path: Path, config: RegConfig) -> list[FencerRecord]:
     """Parse a raw registration CSV into a clean list of Fencer objects.
 
     Skips the LLM call if the CSV is unchanged from the previous version.

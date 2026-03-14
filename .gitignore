@@ -206,7 +206,7 @@ marimo/_static/
 marimo/_lsp/
 __marimo__/
 
-# hr-agent runtime data and secrets
+# reg-agent runtime data and secrets
 data/
-config.json
+src/config/user_config.json
 creds.json

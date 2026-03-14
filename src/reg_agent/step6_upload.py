@@ -6,10 +6,11 @@ from dataclasses import dataclass
 import gspread
 import gspread.utils
 from jinja2 import Template
+from config.tracing import observe
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.anthropic import AnthropicModelSettings
 
-from config import Config, Step
+from config import RegConfig, Step
 from models import FencerRating, FencerRecord
 
 logger = logging.getLogger(__name__)
@@ -149,7 +150,7 @@ def _build_data_prompt(
 
 
 def update_sheet_agent_run(
-        config: Config,
+        config: RegConfig,
         sh: gspread.Spreadsheet,
         work_sheet_name: str,
         system_prompt: str,
@@ -242,7 +243,7 @@ def update_sheet_agent_run(
             break
 
 
-def upload_fencers(fencers: list[FencerRecord], config: Config, sh: gspread.Spreadsheet):
+def upload_fencers(fencers: list[FencerRecord], config: RegConfig, sh: gspread.Spreadsheet):
     discipline_codes = set(config.disciplines.keys())
     fencers_prompt = FENCERS_PROMPT.render(disciplines=",".join(discipline_codes))
     system_prompt = SYSTEM_PROMPT.render(specific_task=fencers_prompt)
@@ -252,7 +253,7 @@ def upload_fencers(fencers: list[FencerRecord], config: Config, sh: gspread.Spre
     update_sheet_agent_run(config, sh, worksheet_name, system_prompt, data_prompt)
 
 
-def upload_discipline(discipline_code: str, fencers: list[FencerRecord], ratings: dict[int, dict[str, FencerRating]], config: Config, sh: gspread.Spreadsheet):
+def upload_discipline(discipline_code: str, fencers: list[FencerRecord], ratings: dict[int, dict[str, FencerRating]], config: RegConfig, sh: gspread.Spreadsheet):
 
     discipline_prompt = DISCIPLINE_PROMPT.render(discipline=discipline_code)
     system_prompt = SYSTEM_PROMPT.render(specific_task=discipline_prompt)
@@ -261,12 +262,15 @@ def upload_discipline(discipline_code: str, fencers: list[FencerRecord], ratings
     update_sheet_agent_run(config, sh, discipline_code, system_prompt, data_prompt)
 
 
+@observe(capture_input=False, capture_output=False)
 def upload_results(
     fencers: list[FencerRecord],
     ratings: dict[int, dict[str, FencerRating]],
-    config: Config,
+    config: RegConfig,
 ) -> None:
     """Upload enriched fencer data to the output Google Sheet."""
+    if not config.output_sheet_url:
+        raise ValueError("output_sheet_url is not set in user config — set it before uploading.")
     logger.info("Authorizing and opening output sheet ...")
     gc = gspread.service_account(filename=config.creds_path)
     sh = gc.open_by_url(config.output_sheet_url)

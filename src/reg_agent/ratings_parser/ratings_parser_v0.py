@@ -1,7 +1,6 @@
 import re
 from html import escape, unescape
 
-import pandas as pd
 
 # Maps substrings in hemaratings weapon-group headers → our codes (longest match first)
 DISCIPLINE_KEYWORDS: list[tuple[str, str]] = [
