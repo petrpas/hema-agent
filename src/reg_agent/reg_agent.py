@@ -10,6 +10,7 @@ import csv
 import io
 import logging
 import sys
+import textwrap
 from dataclasses import dataclass, field
 from datetime import datetime, UTC
 from pathlib import Path
@@ -30,16 +31,18 @@ langfuse = get_langfuse_client()
 
 from config import RegConfig
 from discord_bot.discord_utils import send_long
+from models import FencerRecord
 from discord_bot.msg_constants import SHEET_ACCESS_REQUEST
 from setup_agent.setup_agent import SHARED_MEMORY_PATH
 from step1_download import download_registrations
 from step2_parse import parse_registrations
 from step3_match import match_fencers
-from step4_dedup import deduplicate_fencers
+from step4_dedup import deduplicate_fencers, merge_group, FENCERS_LIKELY_GROUPS_PENDING_FILE
 from step5_ratings import fetch_ratings
 from step6_upload import upload_results
 from utils import (
     load_fencers_list,
+    save_fencers_list,
     load_ratings,
     REG_VER_DIR,
     REG_VER_FILE_PTN,
@@ -88,14 +91,19 @@ Never expose implementation details to the organiser. This means:
 - Never reference tool names or step tags in output visible to the organiser.
 
 ## Pipeline steps (run in order, one at a time)
-1. `tool_download_registrations` — fetch latest registrations from Google Sheet
-2. `tool_parse_registrations`    — parse and normalise fencer data
-3. `tool_match_fencers`          — fuzzy-match fencers to HEMA Ratings profiles
-4. `tool_deduplicate_fencers`    — merge duplicate registrations
-5. `tool_fetch_ratings`          — fetch current ratings from hemaratings.com
-6. `tool_upload_results`         — write enriched data to the output Google Sheet
-7. Payment matching              — **not yet implemented**; mention this to the organiser and skip
-8. Group seeding                 — **not yet implemented**; mention this to the organiser and skip
+1. `tool_download_registrations`      — fetch latest registrations from Google Sheet
+2. `tool_parse_registrations`         — parse and normalise fencer data
+3. `tool_match_fencers`               — fuzzy-match fencers to HEMA Ratings profiles
+4. `tool_deduplicate_fencers`         — merge duplicate registrations
+   4a. If it reports likely groups pending: call `tool_find_likely_duplicates` immediately.
+       Tell the organiser to ✅ groups in the thread (and reply with instructions if needed).
+       Do NOT proceed to step 5 — wait for the next /run.
+   4b. If the thread already has `#dedup-likely-*` messages from a prior turn:
+       call `tool_merge_confirmed_duplicates` before `tool_fetch_ratings`.
+5. `tool_fetch_ratings`               — fetch current ratings from hemaratings.com
+6. `tool_upload_results`              — write enriched data to the output Google Sheet
+7. Payment matching                   — **not yet implemented**; mention this to the organiser and skip
+8. Group seeding                      — **not yet implemented**; mention this to the organiser and skip
 
 After each step, write a short natural-language summary and ask for approval before proceeding.
 
@@ -150,6 +158,7 @@ class AgentDeps:
     thread_index: dict[str, int]  # tag → message_id of most recent post with that tag
     config: RegConfig
     _called_this_turn: set[str] = field(default_factory=set)
+    pending_likely_groups: list[list[FencerRecord]] = field(default_factory=list)
 
 
 from config.tracing import enabled as _tracing_enabled
@@ -257,6 +266,90 @@ async def _post_to_thread(deps: AgentDeps, tag: str, content: str) -> None:
         log.exception("Failed to post to thread (tag=%s)", tag)
 
 
+_NOTES_WRAP = 30
+_DEDUP_FIELDS = ["Name", "Nationality", "Club", "Disciplines", "HR ID", "Notes"]
+
+
+def _extract_dedup_fields(f: FencerRecord) -> dict[str, str]:
+    return {
+        "Name": f.name,
+        "Nationality": f.nationality or "",
+        "Club": f.club or "",
+        "Disciplines": " / ".join(d.str() for d in f.disciplines),
+        "HR ID": str(f.hr_id) if f.hr_id else "",
+        "Notes": f.notes or "",
+    }
+
+
+def _transposed_dedup_table_text(
+    records: list[FencerRecord],
+    col_labels: list[str],
+    note: str | None = None,
+) -> str:
+    """Transposed dedup table: fields as rows, records as columns. Notes are line-wrapped."""
+    all_data = [_extract_dedup_fields(r) for r in records]
+    for d in all_data:
+        if d["Notes"]:
+            d["Notes"] = "\n".join(textwrap.wrap(d["Notes"], _NOTES_WRAP))
+
+    field_col_w = max(len("Field"), max(len(fn) for fn in _DEDUP_FIELDS))
+    col_widths = [field_col_w]
+    for i, label in enumerate(col_labels):
+        w = len(label)
+        for fn in _DEDUP_FIELDS:
+            for segment in all_data[i][fn].split("\n"):
+                w = max(w, len(segment))
+        col_widths.append(w)
+
+    def _pad(s: str, w: int) -> str:
+        return s.ljust(w)
+
+    def _row(cells: list[str]) -> str:
+        return "│ " + " │ ".join(_pad(cells[i], col_widths[i]) for i in range(len(cells))) + " │"
+
+    def _rule(lft: str, mid: str, rgt: str) -> str:
+        return lft + mid.join("─" * (w + 2) for w in col_widths) + rgt
+
+    out: list[str] = ["```"]
+    out.append(_rule("┌", "┬", "┐"))
+    out.append(_row(["Field"] + col_labels))
+    out.append(_rule("├", "┼", "┤"))
+    for fn in _DEDUP_FIELDS:
+        cell_splits = [[fn]] + [all_data[i][fn].split("\n") for i in range(len(records))]
+        max_lines = max(len(s) for s in cell_splits)
+        for li in range(max_lines):
+            out.append(_row([s[li] if li < len(s) else "" for s in cell_splits]))
+    out.append(_rule("└", "┴", "┘"))
+    out.append("```")
+
+    result = "\n".join(out)
+    if note:
+        result += f"\n_{note}_"
+    return result
+
+
+def _dedup_table_text(inputs: list[FencerRecord], merged: FencerRecord, note: str) -> str:
+    labels = [f"record {i + 1}" for i in range(len(inputs))] + ["→ final"]
+    return _transposed_dedup_table_text(list(inputs) + [merged], labels, note=note)
+
+
+def _dedup_likely_table_text(group: list[FencerRecord]) -> str:
+    labels = [f"record {i + 1}" for i in range(len(group))]
+    return _transposed_dedup_table_text(group, labels)
+
+
+async def _post_dedup_table(deps: AgentDeps, inputs: list[FencerRecord], merge_result) -> None:
+    """Post one duplicate-merge table to the pipeline thread."""
+    try:
+        thread = await _ensure_thread(deps)
+        if thread is None:
+            return
+        text = _dedup_table_text(inputs, merge_result.fencer, merge_result.merge_note)
+        await send_long(thread, text)
+    except Exception:
+        log.exception("Failed to post dedup table for hr_id=%s", merge_result.fencer.hr_id)
+
+
 async def _post_csv_to_thread(
     deps: AgentDeps, tag: str, caption: str, header: list[str], rows: list[list[str]], filename: str
 ) -> None:
@@ -355,6 +448,9 @@ async def tool_download_registrations(
     except Exception as e:
         return f"error: {e}"
 
+    # Step 1 always starts a new pipeline run — force a fresh thread even if an old one exists.
+    ctx.deps.thread = None
+    ctx.deps.thread_index = {}
     thread = await _ensure_thread(ctx.deps)
     thread_mention = f" Detailed results are being posted to {thread.mention}." if thread else ""
     try:
@@ -446,7 +542,7 @@ async def tool_match_fencers(ctx: RunContext[AgentDeps]) -> str:
 
 @registration_agent.tool
 async def tool_deduplicate_fencers(ctx: RunContext[AgentDeps]) -> str:
-    """Step 4: Merge duplicate registrations sharing the same hr_id."""
+    """Step 4: Merge duplicate registrations (shared hr_id and surely-identical no-hr_id pairs)."""
     fencers = load_fencers_list(ctx.deps.config.data_dir, FENCERS_MATCHED_FILE)
     if fencers is None:
         return "No matched fencers found — run tool_match_fencers first."
@@ -455,7 +551,9 @@ async def tool_deduplicate_fencers(ctx: RunContext[AgentDeps]) -> str:
         return err
     before = len(fencers)
     try:
-        fencers = await asyncio.to_thread(deduplicate_fencers, fencers, ctx.deps.config)
+        fencers, dedup_report, likely_groups = await asyncio.to_thread(
+            deduplicate_fencers, fencers, ctx.deps.config
+        )
     except Exception as e:
         return f"error: {e}"
     merged = before - len(fencers)
@@ -465,12 +563,186 @@ async def tool_deduplicate_fencers(ctx: RunContext[AgentDeps]) -> str:
          " / ".join(d.str() for d in f.disciplines), str(f.hr_id) if f.hr_id else "—"]
         for f in fencers
     ]
-    await _post_csv_to_thread(ctx.deps, "step4-dedup", f"✅ 4 — {before} → {len(fencers)} fencers ({merged} duplicate{'s' if merged != 1 else ''} merged)",
-                              ["Name", "Nationality", "Club", "Disciplines", "HR ID"], rows, "step4_deduped.csv")
-    return (
+    await _post_csv_to_thread(
+        ctx.deps, "step4-dedup",
+        f"✅ 4 — {before} → {len(fencers)} fencers ({merged} duplicate{'s' if merged != 1 else ''} merged)",
+        ["Name", "Nationality", "Club", "Disciplines", "HR ID"], rows, "step4_deduped.csv",
+    )
+
+    for dup_inputs, dup_merged in dedup_report:
+        await _post_dedup_table(ctx.deps, dup_inputs, dup_merged)
+
+    ctx.deps.pending_likely_groups = likely_groups
+
+    result = (
         f"Deduplication done: {before} → {len(fencers)} fencers "
         f"({merged} duplicate{'s' if merged != 1 else ''} merged). "
         f"Thread tag: step4-dedup"
+    )
+    if likely_groups:
+        result += (
+            f" Found {len(likely_groups)} likely no-hr_id duplicate group(s) awaiting confirmation — "
+            f"call tool_find_likely_duplicates next."
+        )
+    return result
+
+
+@registration_agent.tool
+async def tool_find_likely_duplicates(ctx: RunContext[AgentDeps]) -> str:
+    """Step 4b: Post likely no-hr_id duplicate groups to the pipeline thread for organiser ✅ confirmation.
+
+    Call this immediately after tool_deduplicate_fencers reports pending likely groups.
+    """
+    if err := _once_per_turn(ctx.deps, "tool_find_likely_duplicates"):
+        return err
+
+    likely_groups = ctx.deps.pending_likely_groups
+    if not likely_groups:
+        return "No pending likely duplicate groups."
+
+    # Persist groups to file so tool_merge_confirmed_duplicates can recover them on next /run
+    import json as _json
+    groups_data = {
+        str(i + 1): [r.model_dump() for r in group]
+        for i, group in enumerate(likely_groups)
+    }
+    groups_path = ctx.deps.config.data_dir / FENCERS_LIKELY_GROUPS_PENDING_FILE
+    groups_path.write_text(_json.dumps(groups_data, ensure_ascii=False, indent=2))
+
+    # Post each group as a tagged thread message
+    for i, group in enumerate(likely_groups, 1):
+        tag = f"dedup-likely-{i}"
+        table = _dedup_likely_table_text(group)
+        caption = f"#{tag}\n{table}\n_✅ to merge — reply to this message with merge instructions if needed_"
+        thread = await _ensure_thread(ctx.deps)
+        if thread:
+            try:
+                msg = await send_long(thread, caption)
+                ctx.deps.thread_index[tag] = msg.id
+            except Exception:
+                log.exception("Failed to post dedup-likely-%d to thread", i)
+
+    n = len(likely_groups)
+    return (
+        f"{n} likely group{'s' if n != 1 else ''} posted to thread — "
+        f"awaiting user confirmation via ✅ reactions."
+    )
+
+
+@registration_agent.tool
+async def tool_merge_confirmed_duplicates(ctx: RunContext[AgentDeps]) -> str:
+    """Step 4c: Apply merges for likely-duplicate groups the organiser confirmed with ✅.
+
+    Reads ✅ reactions from thread messages, merges confirmed groups, updates fencers_deduped.json.
+    Call this at the start of a /run when the thread has pending #dedup-likely-* messages.
+    """
+    if err := _once_per_turn(ctx.deps, "tool_merge_confirmed_duplicates"):
+        return err
+
+    import json as _json
+
+    groups_path = ctx.deps.config.data_dir / FENCERS_LIKELY_GROUPS_PENDING_FILE
+    if not groups_path.exists():
+        return "No pending likely groups file found — nothing to merge."
+
+    groups_data: dict[str, list[dict]] = _json.loads(groups_path.read_text())
+
+    fencers = load_fencers_list(ctx.deps.config.data_dir, FENCERS_DEDUPED_FILE)
+    if fencers is None:
+        return "No deduplicated fencers found."
+
+    if ctx.deps.thread is None:
+        return "No pipeline thread found."
+
+    # Check each group for ✅ reactions
+    confirmed_groups: list[list[FencerRecord]] = []
+    confirmed_hints: list[str | None] = []
+    skipped = 0
+
+    for group_num_str, records_data in groups_data.items():
+        tag = f"dedup-likely-{group_num_str}"
+        msg_id = ctx.deps.thread_index.get(tag)
+        if msg_id is None:
+            skipped += 1
+            continue
+
+        try:
+            msg = await ctx.deps.thread.fetch_message(msg_id)
+        except Exception:
+            log.exception("Failed to fetch thread message for tag=%s", tag)
+            skipped += 1
+            continue
+
+        # Check for ✅ from any non-bot user
+        confirmed_reaction = False
+        for r in msg.reactions:
+            if str(r.emoji) == "✅":
+                async for user in r.users():
+                    if not user.bot:
+                        confirmed_reaction = True
+                        break
+            if confirmed_reaction:
+                break
+
+        if not confirmed_reaction:
+            skipped += 1
+            continue
+
+        # Look for a thread reply on this message as a merge hint
+        hint: str | None = None
+        async for reply in ctx.deps.thread.history(limit=50):
+            if reply.reference and reply.reference.message_id == msg_id and not reply.author.bot:
+                hint = reply.content
+                break
+
+        group = [FencerRecord(**r) for r in records_data]
+        confirmed_groups.append(group)
+        confirmed_hints.append(hint)
+
+    if not confirmed_groups:
+        return f"No groups confirmed — {skipped} group{'s' if skipped != 1 else ''} skipped (no ✅)."
+
+    # Merge each confirmed group
+    merge_results: list[FencerRecord] = []
+    merged_name_pairs: list[str] = []
+    group_name_sets: list[set[str]] = []
+
+    for group, hint in zip(confirmed_groups, confirmed_hints, strict=False):
+        merge_result = await asyncio.to_thread(merge_group, group, ctx.deps.config, hint)
+        merge_results.append(merge_result.fencer)
+        merged_name_pairs.append(" + ".join(f.name for f in group))
+        group_name_sets.append({f.name for f in group})
+
+    # Update fencers list: replace each group's first member with the merged record, skip the rest
+    new_fencers: list[FencerRecord] = []
+    first_placed: set[int] = set()  # indices into confirmed_groups already emitted
+
+    for fencer in fencers:
+        placed = False
+        for i, names_set in enumerate(group_name_sets):
+            if fencer.name in names_set:
+                if i not in first_placed:
+                    new_fencers.append(merge_results[i])
+                    first_placed.add(i)
+                # else: subsequent member of this group — skip
+                placed = True
+                break
+        if not placed:
+            new_fencers.append(fencer)
+
+    save_fencers_list(new_fencers, ctx.deps.config.data_dir / FENCERS_DEDUPED_FILE)
+    groups_path.unlink(missing_ok=True)
+
+    names_str = ", ".join(f"[{n}]" for n in merged_name_pairs)
+    summary = (
+        f"✅ Confirmed merge{'s' if len(confirmed_groups) != 1 else ''} applied: {names_str}. "
+        f"{skipped} group{'s' if skipped != 1 else ''} skipped."
+    )
+    await ctx.deps.channel.send(summary)
+
+    return (
+        f"Applied {len(confirmed_groups)} confirmed merge{'s' if len(confirmed_groups) != 1 else ''}: "
+        f"{', '.join(merged_name_pairs)}. {skipped} skipped."
     )
 
 
