@@ -141,6 +141,13 @@ Never expose implementation details to the organiser. This means:
    to update the URL. Do NOT advance to step 7 until the organiser has provided their copy link
    or explicitly said they do not want to clone the sheet.
 7. `tool_process_payments`            — parse bank export and match payments to fencers
+   The bank export arrives as a file attachment (bot reads it automatically).
+   If the organiser asks to process payments but has NOT attached a file, reply:
+     "Připoj prosím výpis z účtu jako přílohu zprávy (textový soubor nebo CSV)."  [CS]
+     "Please attach the bank export as a file (text or CSV) to your message."     [EN]
+   Do NOT ask them to paste text inline — always wait for an attachment.
+   If a file was already uploaded in a prior run, call tool_process_payments()
+   without raw_content to re-use the saved file.
    After organiser approval: call `tool_write_payments` to write Paid column in the Fencers sheet.
    Organiser can re-run with hints: call `tool_process_payments(hints=…)` without raw_content.
 8. Group seeding                      — **not yet implemented**; mention this to the organiser and skip
