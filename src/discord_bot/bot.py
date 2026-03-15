@@ -245,6 +245,15 @@ class RegistrationCog(commands.Cog):
             await self._handle_csv_upload(message, csv_attachment)
             return
 
+        # Payment file: any non-CSV attachment when the message mentions "payment"
+        if message.attachments and "payment" in message.content.lower():
+            payment_attachment = next(
+                (a for a in message.attachments if not a.filename.lower().endswith(".csv")), None
+            )
+            if payment_attachment is not None:
+                await self._handle_payment_upload(message, payment_attachment)
+                return
+
         log.info("Registration message from %s: %s", message.author, message.content[:80])
         await self._invoke_agent(message.channel, message.content)  # type: ignore[arg-type]
 
@@ -267,6 +276,26 @@ class RegistrationCog(commands.Cog):
             return
         synthetic = f"[system: organiser uploaded a CSV file — {attachment.filename} saved as {path.name}. Decide what to do based on current pipeline state.]"
         await self._invoke_agent(channel, synthetic)
+
+    async def _handle_payment_upload(
+        self, message: discord.Message, attachment: discord.Attachment
+    ) -> None:
+        channel = message.channel
+        if not isinstance(channel, discord.TextChannel):
+            return
+        try:
+            data = await attachment.read()
+            content = data.decode("utf-8", errors="replace")
+            log.info("Read payment file from %s: %s (%d bytes)", message.author, attachment.filename, len(data))
+        except Exception as e:
+            log.exception("Failed to read payment attachment")
+            await channel.send(f"⚠ Could not read the uploaded file: {e}")
+            return
+        augmented = (
+            f"[payment file: {attachment.filename}]\n{content}\n\n"
+            f"{message.content}"
+        )
+        await self._invoke_agent(channel, augmented)
 
     @app_commands.command(name="run", description="Start or continue the registration pipeline")
     @app_commands.default_permissions(manage_messages=True)

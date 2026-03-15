@@ -60,6 +60,16 @@ from step4_dedup import (
 )
 from step5_ratings import fetch_ratings
 from step6_upload import upload_results, upload_results_initial, setup_output_sheet
+from step7_payments import (
+    parse_transactions,
+    match_payments,
+    format_payments_report,
+    ParsedTransactionList,
+    PaymentsResult,
+    PAYMENTS_RAW_FILE,
+    PAYMENTS_PARSED_FILE,
+    PAYMENTS_MATCHED_FILE,
+)
 from utils import (
     load_fencers_list,
     save_fencers_list,
@@ -81,6 +91,9 @@ _THREAD_NAMES = {
     "EN": "📊 Processing outputs",
     "CS": "📊 Průběžné zpracování",
 }
+
+_PAYMENTS_THREAD_PREFIX = "💰"
+_PAYMENTS_THREAD_NAME = "💰 Payments"
 
 _SYSTEM_PROMPT = """\
 You are the HEMA Tournament Registration Agent running inside a Discord channel.
@@ -127,7 +140,9 @@ Never expose implementation details to the organiser. This means:
    When the organiser replies with a link to their own copy, call `tool_set_output_sheet`
    to update the URL. Do NOT advance to step 7 until the organiser has provided their copy link
    or explicitly said they do not want to clone the sheet.
-7. Payment matching                   — **not yet implemented**; mention this to the organiser and skip
+7. `tool_process_payments`            — parse bank export and match payments to fencers
+   After organiser approval: call `tool_write_payments` to write Paid column in the Fencers sheet.
+   Organiser can re-run with hints: call `tool_process_payments(hints=…)` without raw_content.
 8. Group seeding                      — **not yet implemented**; mention this to the organiser and skip
 
 After each step, write a short natural-language summary and ask for approval before proceeding.
@@ -256,6 +271,31 @@ async def _find_latest_thread(channel: discord.TextChannel) -> discord.Thread | 
             await t.edit(archived=False)
             return t
     return None
+
+
+async def _find_payments_thread(channel: discord.TextChannel) -> discord.Thread | None:
+    """Return the most recent payments thread, unarchiving if needed."""
+    candidates = [t for t in channel.threads if t.name.startswith(_PAYMENTS_THREAD_PREFIX)]
+    if candidates:
+        return max(candidates, key=lambda t: t.created_at)
+    async for t in channel.archived_threads(limit=10):
+        if t.name.startswith(_PAYMENTS_THREAD_PREFIX):
+            await t.edit(archived=False)
+            return t
+    return None
+
+
+async def _create_payments_thread(channel: discord.TextChannel) -> discord.Thread | None:
+    """Create the payments thread with an anchor message."""
+    try:
+        anchor = await channel.send(_PAYMENTS_THREAD_NAME)
+        return await anchor.create_thread(
+            name=_PAYMENTS_THREAD_NAME,
+            auto_archive_duration=1440,
+        )
+    except Exception:
+        log.exception("Failed to create payments thread")
+        return None
 
 
 async def _scan_thread(thread: discord.Thread) -> dict[str, int]:
@@ -970,6 +1010,154 @@ async def tool_set_output_sheet(ctx: RunContext[AgentDeps], url: str) -> str:
     )
     await _post_to_thread(ctx.deps, "step6-sheet-updated", f"📄 Output sheet URL updated: {url}")
     return f"Output sheet URL updated. Future uploads will use: {url}"
+
+
+@registration_agent.tool
+async def tool_process_payments(
+    ctx: RunContext[AgentDeps],
+    raw_content: str | None = None,
+    hints: str | None = None,
+) -> str:
+    """Step 7: Parse bank export and match payments to fencers.
+
+    raw_content: raw bank statement text. Required on first call; omit to re-use the saved file.
+    hints: optional organiser corrections injected into the matcher (e.g. "line 12 is David Brown").
+    """
+    data_dir = ctx.deps.config.data_dir
+    raw_path = data_dir / PAYMENTS_RAW_FILE
+
+    if raw_content:
+        raw_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_path.write_text(raw_content)
+    elif raw_path.exists():
+        raw_content = raw_path.read_text()
+    else:
+        return "No payment file found — please attach a bank statement file."
+
+    fencers = load_fencers_list(data_dir, FENCERS_DEDUPED_FILE)
+    if fencers is None:
+        return "No fencer data found — complete the pipeline through step 4 first."
+
+    fencer_summaries = [
+        {
+            "name": f.name,
+            "disciplines": ", ".join(d.str() for d in f.disciplines),
+            "afterparty": f.after_party or "unknown",
+            "borrow": ", ".join(str(w) for w in f.borrow) if f.borrow else "none",
+        }
+        for f in fencers
+    ]
+
+    try:
+        transactions = await asyncio.to_thread(
+            parse_transactions, raw_content, ctx.deps.config
+        )
+    except Exception as e:
+        return f"error parsing transactions: {e}"
+
+    (data_dir / PAYMENTS_PARSED_FILE).write_text(
+        ParsedTransactionList(transactions=transactions).model_dump_json(indent=2)
+    )
+
+    try:
+        result = await asyncio.to_thread(
+            match_payments, transactions, fencer_summaries, hints, ctx.deps.config
+        )
+    except Exception as e:
+        return f"error matching payments: {e}"
+
+    (data_dir / PAYMENTS_MATCHED_FILE).write_text(result.model_dump_json(indent=2))
+
+    report = format_payments_report(result)
+    thread = await _find_payments_thread(ctx.deps.channel)
+    if thread is None:
+        thread = await _create_payments_thread(ctx.deps.channel)
+    if thread is not None:
+        await send_long(thread, report)
+
+    return (
+        f"Done. Results in 💰 Payments — "
+        f"{len(result.matched)} matched, {len(result.possible)} possible, "
+        f"{len(result.unmatched_payments)} unmatched payments."
+    )
+
+
+@registration_agent.tool
+async def tool_write_payments(ctx: RunContext[AgentDeps]) -> str:
+    """Step 7b: Write hi-confidence payment amounts to the Paid column (col 7) of the Fencers sheet.
+
+    Loads payments_matched.json and writes only hi-confidence matches.
+    Low-confidence matches are skipped — organiser should re-run with hints or fix manually.
+    """
+    import gspread
+    import gspread.utils
+
+    data_dir = ctx.deps.config.data_dir
+    matched_path = data_dir / PAYMENTS_MATCHED_FILE
+    if not matched_path.exists():
+        return "No payments match file found — run tool_process_payments first."
+
+    result = PaymentsResult.model_validate_json(matched_path.read_text())
+    hi_matches = result.matched  # only hi-confidence
+
+    if not hi_matches:
+        return "No hi-confidence matches to write."
+
+    if ctx.deps.config.output_sheet_url is None:
+        return "No output sheet URL configured — complete step 6 first."
+
+    try:
+        gc = gspread.service_account(filename=ctx.deps.config.creds_path)
+        sh = gc.open_by_url(ctx.deps.config.output_sheet_url)
+        ws = sh.worksheet("Fencers")
+        all_values = ws.get_all_values()
+    except Exception as e:
+        return f"error opening sheet: {e}"
+
+    # Build name → row index (1-based, row 1 = header)
+    name_to_row: dict[str, int] = {}
+    for i, row in enumerate(all_values[1:], start=2):  # skip header
+        if row and row[1].strip():  # col 2 (index 1) = Name
+            name_to_row[row[1].strip().lower()] = i
+
+    written: list[str] = []
+    not_found: list[str] = []
+
+    updates: list[tuple[str, str]] = []  # (A1 cell, amount)
+    for match in hi_matches:
+        for fname in match.fencer_names:
+            row_idx = name_to_row.get(fname.strip().lower())
+            if row_idx is None:
+                not_found.append(fname)
+                continue
+            cell = gspread.utils.rowcol_to_a1(row_idx, 7)  # col 7 = Paid
+            updates.append((cell, match.amount))
+            written.append(fname)
+
+    try:
+        for cell, amount in updates:
+            ws.update([[amount]], cell)
+    except Exception as e:
+        return f"error writing to sheet: {e}"
+
+    thread = await _find_payments_thread(ctx.deps.channel)
+    if thread is None:
+        thread = await _create_payments_thread(ctx.deps.channel)
+    if thread is not None:
+        skip_count = len(result.possible)
+        msg = (
+            f"✅ Wrote payments for {len(written)} fencer(s): {', '.join(written)}."
+            + (f"\n⚠️ {skip_count} possible match(es) skipped — re-run with hints or fix manually." if skip_count else "")
+            + (f"\n❓ Not found in sheet: {', '.join(not_found)}." if not_found else "")
+        )
+        await send_long(thread, msg)
+
+    result_msg = f"Wrote payments for {len(written)} fencer(s)."
+    if result.possible:
+        result_msg += f" {len(result.possible)} possible match(es) need manual review."
+    if not_found:
+        result_msg += f" Not found in sheet: {', '.join(not_found)}."
+    return result_msg
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────

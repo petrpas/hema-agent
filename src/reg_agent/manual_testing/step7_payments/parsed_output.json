@@ -1,0 +1,114 @@
+[
+  {
+    "line_no": 2,
+    "date": "02.05.2025",
+    "sender_name": "Kmicic Andrzej",
+    "reference": "Kmicic sabre Na Duel 2025",
+    "amount": "750 CZK",
+    "notes": "Account: 2801934756, Bank code: 2010"
+  },
+  {
+    "line_no": 4,
+    "date": "04.05.2025",
+    "sender_name": "Jego Oświecenie Knize Wisniowiecki",
+    "reference": "Na Duel 2025 / szabla / Skrzetuski Jan, HR 3842",
+    "amount": "751,25 CZK",
+    "notes": "International transfer from Poland (WBKPPLPP), Account: PL61109010140000071219812874"
+  },
+  {
+    "line_no": 5,
+    "date": "04.05.2025",
+    "sender_name": "Wolodyjowski Michal",
+    "reference": "Na Duel Wolodyjowski sabre",
+    "amount": "750 CZK",
+    "notes": "Account: 2290843715, Bank code: 2010"
+  },
+  {
+    "line_no": 6,
+    "date": "05.05.2025",
+    "sender_name": "Wolodyjowski Michal",
+    "reference": "zapujceni zbrane duel",
+    "amount": "50 CZK",
+    "notes": "Account: 2290843715, Bank code: 2010, Weapon rental fee"
+  },
+  {
+    "line_no": 8,
+    "date": "06.05.2025",
+    "sender_name": "Three Heads Brotherhood",
+    "reference": "Na Duel 2025 sabre Longinus Podbipięta Three Heads Brotherhood",
+    "amount": "750 CZK",
+    "notes": "Account: 8834120093, Bank code: 5500"
+  },
+  {
+    "line_no": 9,
+    "date": "06.05.2025",
+    "sender_name": "Bohun",
+    "reference": "Na Duel 2025 / Bohun / šavle",
+    "amount": "756,50 CZK",
+    "notes": "International transfer from Ukraine (PUMBUA2X), Account: UA903052992990004149123456789"
+  },
+  {
+    "line_no": 11,
+    "date": "08.05.2025",
+    "sender_name": "Dzikie Pola Wild Riders",
+    "reference": "Na Duel 2025, Helena Kurcewiczowna, rapier, HR 3850",
+    "amount": "750 CZK",
+    "notes": "Account: 4412309871, Bank code: 3030"
+  },
+  {
+    "line_no": 12,
+    "date": "08.05.2025",
+    "sender_name": "Dzikie Pola Wild Riders",
+    "reference": "zapujceni rapiru - Helena Kurcewiczowna",
+    "amount": "50 CZK",
+    "notes": "Account: 4412309871, Bank code: 3030, Weapon rental fee"
+  },
+  {
+    "line_no": 14,
+    "date": "09.05.2025",
+    "sender_name": "<UNKNOWN>",
+    "reference": "Na Duel 2025 sabre Islam Girej",
+    "amount": "752,10 CZK",
+    "notes": "International transfer from Turkey (ISBKTRISXXX), Account: TR330006100519786457841326"
+  },
+  {
+    "line_no": 16,
+    "date": "12.05.2025",
+    "sender_name": "Zagłoba",
+    "reference": "zagłoba šavle Na Duel",
+    "amount": "750 CZK",
+    "notes": "Account: 6612038475, Bank code: 0300"
+  },
+  {
+    "line_no": 17,
+    "date": "12.05.2025",
+    "sender_name": "Zagłoba",
+    "reference": "zapůjčení šavle - Zagłoba Na Duel",
+    "amount": "50 CZK",
+    "notes": "Account: 6612038475, Bank code: 0300, Weapon rental fee"
+  },
+  {
+    "line_no": 19,
+    "date": "14.05.2025",
+    "sender_name": "Charłamp",
+    "reference": "Na Duel 2025 szabla Kmicic - dopłata za půjčení zbraně?? ne.",
+    "amount": "751,25 CZK",
+    "notes": "International transfer from Poland (WBKPPLPP), Account: PL88109024020000002839182736"
+  },
+  {
+    "line_no": 21,
+    "date": "16.05.2025",
+    "sender_name": "Šermířské potřeby Bohemia",
+    "reference": "sponzor Na Duel 2025 - logo na banneru",
+    "amount": "400 CZK",
+    "notes": "Account: 9920013847, Bank code: 2010, Sponsorship"
+  },
+  {
+    "line_no": 24,
+    "date": "18.05.2025",
+    "sender_name": "<UNKNOWN>",
+    "reference": "Na Duel 2025 sabre",
+    "amount": "606,09 CZK",
+    "notes": "Account: CZ4820100000002398127634, Bank code: FIOBCZPPXXX"
+  }
+]

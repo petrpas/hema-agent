@@ -28,11 +28,13 @@ _DEFAULT_USER_CONFIG = Path(__file__).parent / "user_config.json"
 # ── Step enum ──────────────────────────────────────────────────────────────────
 
 class Step(StrEnum):
-    PARSE = "parse"    # step2: LLM parses raw CSV rows into FencerRecord objects
-    MATCH = "match"    # step3: LLM fuzzy-matches fencers to HEMA Ratings profiles
-    DEDUP = "dedup"    # step4: LLM merges duplicate registrations sharing the same hr_id
-    HEAL = "heal"      # step5: LLM rewrites the ratings HTML parser when it breaks
-    UPLOAD = "upload"  # step6: LLM agent syncs enriched data to the output Google Sheet
+    PARSE = "parse"              # step2: LLM parses raw CSV rows into FencerRecord objects
+    MATCH = "match"              # step3: LLM fuzzy-matches fencers to HEMA Ratings profiles
+    DEDUP = "dedup"              # step4: LLM merges duplicate registrations sharing the same hr_id
+    HEAL = "heal"                # step5: LLM rewrites the ratings HTML parser when it breaks
+    UPLOAD = "upload"            # step6: LLM agent syncs enriched data to the output Google Sheet
+    PAYMENTS_PARSE = "payments_parse"  # step7: LLM parses raw bank export → ParsedTransaction list
+    PAYMENTS_MATCH = "payments_match"  # step7: LLM matches transactions to fencers
 
 
 # ── System config (agent_config.json) ─────────────────────────────────────────
@@ -44,6 +46,7 @@ class RegAgentSystemConfig(BaseModel):
     creds_path: str = "creds.json"
     data_root_dir: str = "data"
     batch_sleep: float = 2.0  # seconds to wait between LLM batch calls
+    output_template: str = ""
 
     def model(self, step: Step) -> str:
         """Return the model string for a step.

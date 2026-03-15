@@ -6,11 +6,14 @@
       "match":   "anthropic:claude-sonnet-4-6",
       "dedup":   "anthropic:claude-sonnet-4-6",
       "heal":    "anthropic:claude-sonnet-4-6",
-      "upload":  "anthropic:claude-sonnet-4-6"
+      "upload":  "anthropic:claude-sonnet-4-6",
+      "payments_parse": "anthropic:claude-haiku-4-5-20251001",
+      "payments_match": "anthropic:claude-sonnet-4-6"
     },
     "upload_thinking_tokens": 2000,
     "creds_path": "src/creds.json",
     "data_root_dir": "data",
-    "batch_sleep": 2
+    "batch_sleep": 2,
+    "output_template": "https://docs.google.com/spreadsheets/d/1UMUxRfHnk5nOLY5D4oie2fos_oGUGf70MOH0xqwMaxU/edit?usp=sharing"
   }
 }

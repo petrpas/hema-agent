@@ -1,0 +1,11 @@
+Reg.;Name;Nat.;Club;HR_ID;Disciplines;Paid;Afterparty;Borrow weapons;Notes
+1;Andrzej Kmicic;PL;Laudański Hussar Wing & Sabre Club;3841;SA;;;No;Arrives late; will probably burn down the registration tent
+2;Jan Skrzetuski;PL;Knights of the Steppe Virtue;3842;"SA,RA";;;No;Requests opponent without moustache to avoid confusion with Bohun
+3;Michał Wołodyjowski;PL;Pan Wołodyjowski Fencing Academy;3843;SA;;;No;Tiny but fastest hand in the Commonwealth, organisers warned
+4;Zagłoba;PL;One Eye Open, Mead in Hand SC;3844;SA;;;SA;Claims to have beaten everyone already, form illegible
+5;Bohun;UA;Dzikie Pola Wild Riders;3845;SA;;No;No;Do not pair with Skrzetuski in pool rounds
+6;Longinus Podbipięta;LT;Three Heads Brotherhood;3846;SA;;;No;Competing only if vow allows. Weapon oversized, checked separately
+7;Tuhaj-bej;CR;Crimean Horde Swordbrothers;3851;SA;;No;No;Arrived with 40 000 companions, only one registered
+8;Azja Tuhajbejowicz;CR;Half-Blood Steppe Fencing Lodge;3853;SA;;;No;Son of Tuhaj-bej. Do NOT seat at same table as Wołodyjowski
+9;Islam III Girej (Khan);CR;Crimean Horde Swordbrothers;3852;SA;;Yes;No;Expects separate yurt as changing room. Withdrew from Zbaraż pool without notice
+10;Helena Kurcewiczówna;UA;Dzikie Pola Wild Riders;3850;RA;;;RA;Only rapier — refuses sabre on principle after the Zbaraż affair
