@@ -10,7 +10,6 @@ import csv
 import io
 import logging
 import sys
-import textwrap
 from dataclasses import dataclass, field
 from datetime import datetime, UTC
 from pathlib import Path
@@ -36,8 +35,27 @@ from discord_bot.msg_constants import SHEET_ACCESS_REQUEST
 from setup_agent.setup_agent import SHARED_MEMORY_PATH
 from step1_download import download_registrations
 from step2_parse import parse_registrations
-from step3_match import match_fencers
-from step4_dedup import deduplicate_fencers, merge_group, FENCERS_LIKELY_GROUPS_PENDING_FILE
+from step3_match import (
+    match_fencers,
+    load_corrections,
+    save_corrections,
+    _load_cache,
+    _save_cache,
+    _upsert_cache_entry,
+    _build_hr_index,
+    _get_fighters_compact,
+    _categorize_fencer,
+    _match_table_chunks,
+    _MATCH_TABLE_LEGEND,
+    _MATCH_TABLE_TEMPLATE,
+)
+from step4_dedup import (
+    deduplicate_fencers,
+    merge_group,
+    FENCERS_LIKELY_GROUPS_PENDING_FILE,
+    _dedup_table_text,
+    _dedup_likely_table_text,
+)
 from step5_ratings import fetch_ratings
 from step6_upload import upload_results
 from utils import (
@@ -49,6 +67,7 @@ from utils import (
     REG_VER_FILE_REG,
     FENCERS_PARSED_FILE,
     FENCERS_MATCHED_FILE,
+    FENCERS_CACHE_FILE,
     FENCERS_DEDUPED_FILE,
 )
 
@@ -142,6 +161,19 @@ that data if the organiser raises an objection:
 - Call `read_thread_message(tag)` to fetch the most recent data for that step.
 - Only the **current run's thread** is accessible. If the organiser asks about data from a
   previous run, explain that it is not available here and they should consult the thread directly.
+
+## Weapon / discipline codes
+Weapons: LS = Long Sword, SA = Sabre, RA = Rapier, RD = Rapier & Dagger, SB = Sword & Buckler
+Gender suffix: no suffix = Open by default, O = explicitly Open, W = Women, M = Men (e.g. LS = Long Sword open, LSO = Long Sword Open, LSW = Long Sword Women, LSM = Long Sword Men — rare, most men's categories run as Open)
+
+## Correcting a match (step 3)
+If the organiser reports a wrong match after step 3:
+- Wrong hr_id or no profile: call tool_correct_match immediately.
+  This fixes the current run and persists the correction for all future reruns.
+- General matching guidance (nationality rules, proxy patterns, etc.):
+  call store_memory with the text prefixed by "[match-hint]".
+  These hints are automatically passed to the matcher on every rerun.
+Do NOT re-run step 3 to apply a correction — tool_correct_match patches the data in place.
 
 ## Tournament
 {tournament_name}
@@ -264,78 +296,6 @@ async def _post_to_thread(deps: AgentDeps, tag: str, content: str) -> None:
         deps.thread_index[tag] = first.id
     except Exception:
         log.exception("Failed to post to thread (tag=%s)", tag)
-
-
-_NOTES_WRAP = 30
-_DEDUP_FIELDS = ["Name", "Nationality", "Club", "Disciplines", "HR ID", "Notes"]
-
-
-def _extract_dedup_fields(f: FencerRecord) -> dict[str, str]:
-    return {
-        "Name": f.name,
-        "Nationality": f.nationality or "",
-        "Club": f.club or "",
-        "Disciplines": " / ".join(d.str() for d in f.disciplines),
-        "HR ID": str(f.hr_id) if f.hr_id else "",
-        "Notes": f.notes or "",
-    }
-
-
-def _transposed_dedup_table_text(
-    records: list[FencerRecord],
-    col_labels: list[str],
-    note: str | None = None,
-) -> str:
-    """Transposed dedup table: fields as rows, records as columns. Notes are line-wrapped."""
-    all_data = [_extract_dedup_fields(r) for r in records]
-    for d in all_data:
-        if d["Notes"]:
-            d["Notes"] = "\n".join(textwrap.wrap(d["Notes"], _NOTES_WRAP))
-
-    field_col_w = max(len("Field"), max(len(fn) for fn in _DEDUP_FIELDS))
-    col_widths = [field_col_w]
-    for i, label in enumerate(col_labels):
-        w = len(label)
-        for fn in _DEDUP_FIELDS:
-            for segment in all_data[i][fn].split("\n"):
-                w = max(w, len(segment))
-        col_widths.append(w)
-
-    def _pad(s: str, w: int) -> str:
-        return s.ljust(w)
-
-    def _row(cells: list[str]) -> str:
-        return "│ " + " │ ".join(_pad(cells[i], col_widths[i]) for i in range(len(cells))) + " │"
-
-    def _rule(lft: str, mid: str, rgt: str) -> str:
-        return lft + mid.join("─" * (w + 2) for w in col_widths) + rgt
-
-    out: list[str] = ["```"]
-    out.append(_rule("┌", "┬", "┐"))
-    out.append(_row(["Field"] + col_labels))
-    out.append(_rule("├", "┼", "┤"))
-    for fn in _DEDUP_FIELDS:
-        cell_splits = [[fn]] + [all_data[i][fn].split("\n") for i in range(len(records))]
-        max_lines = max(len(s) for s in cell_splits)
-        for li in range(max_lines):
-            out.append(_row([s[li] if li < len(s) else "" for s in cell_splits]))
-    out.append(_rule("└", "┴", "┘"))
-    out.append("```")
-
-    result = "\n".join(out)
-    if note:
-        result += f"\n_{note}_"
-    return result
-
-
-def _dedup_table_text(inputs: list[FencerRecord], merged: FencerRecord, note: str) -> str:
-    labels = [f"record {i + 1}" for i in range(len(inputs))] + ["→ final"]
-    return _transposed_dedup_table_text(list(inputs) + [merged], labels, note=note)
-
-
-def _dedup_likely_table_text(group: list[FencerRecord]) -> str:
-    labels = [f"record {i + 1}" for i in range(len(group))]
-    return _transposed_dedup_table_text(group, labels)
 
 
 async def _post_dedup_table(deps: AgentDeps, inputs: list[FencerRecord], merge_result) -> None:
@@ -517,12 +477,66 @@ async def tool_match_fencers(ctx: RunContext[AgentDeps]) -> str:
     if err := _once_per_turn(ctx.deps, "tool_match_fencers"):
         return err
     before_unmatched = sum(1 for f in fencers if f.hr_id is None)
+    parsed_fencers = fencers  # keep original for table building
+
+    # Extract [match-hint] lines from organiser memory and pass to matcher
+    memory_text = _read_memory()
+    hints = []
+    for line in memory_text.splitlines():
+        if "[match-hint]" in line:
+            idx = line.index("[match-hint]")
+            hint_text = line[idx + len("[match-hint]"):].strip()
+            if hint_text:
+                hints.append(hint_text)
+    instructions = "\n".join(hints) if hints else None
+
     try:
-        fencers = await asyncio.to_thread(match_fencers, fencers, ctx.deps.config)
+        fencers = await asyncio.to_thread(match_fencers, fencers, ctx.deps.config, instructions)
     except Exception as e:
         return f"error: {e}"
     after_unmatched = sum(1 for f in fencers if f.hr_id is None)
     unmatched_names = [f.name for f in fencers if f.hr_id is None]
+
+    # Post human-readable matching table grouped by category
+    try:
+        fighters_text = await asyncio.to_thread(_get_fighters_compact, ctx.deps.config.data_dir)
+        hr_index = _build_hr_index(fighters_text)
+        lang   = ctx.deps.config.language
+        tmpl   = _MATCH_TABLE_TEMPLATE.get(lang, _MATCH_TABLE_TEMPLATE["EN"])
+        legend = _MATCH_TABLE_LEGEND.get(lang, _MATCH_TABLE_LEGEND["EN"])
+
+        # Pre-compute proxy_emails from full list (must not use a subset)
+        from collections import defaultdict
+        email_names: dict[str, set[str]] = defaultdict(set)
+        for f in fencers:
+            if f.email:
+                email_names[f.email.lower()].add(f.name.lower())
+        proxy_emails = {e for e, names in email_names.items() if len(names) > 1}
+
+        # Categorize fencers
+        parsed_by_email = {(f.email or "").lower(): f for f in parsed_fencers}
+        groups: dict[str, list[FencerRecord]] = {"confirmed": [], "found": [], "unmatched": [], "rejected": []}
+        for mf in fencers:
+            pf = parsed_by_email.get((mf.email or "").lower(), mf)
+            groups[_categorize_fencer(pf, mf)].append(mf)
+
+        SECTION_ORDER = ["confirmed", "found", "unmatched", "rejected"]
+        non_empty = [s for s in SECTION_ORDER if groups[s]]
+
+        thread = await _ensure_thread(ctx.deps)
+        if thread is not None:
+            await thread.send(tmpl["header"] + "\n" + legend)
+            for i, section in enumerate(non_empty):
+                await thread.send(tmpl[section])
+                for chunk in _match_table_chunks(
+                    parsed_fencers, groups[section], hr_index,
+                    proxy_emails=proxy_emails,
+                ):
+                    await thread.send(chunk)
+                if i < len(non_empty) - 1:
+                    await thread.send("---")
+    except Exception:
+        log.exception("Failed to post step3 match table to thread")
 
     rows = [
         [f.name, f.nationality or "—", f.club or "—", str(f.hr_id) if f.hr_id else "unmatched"]
@@ -530,6 +544,7 @@ async def tool_match_fencers(ctx: RunContext[AgentDeps]) -> str:
     ]
     await _post_csv_to_thread(ctx.deps, "step3-match", f"✅ 3 — matched {before_unmatched - after_unmatched}, {after_unmatched} still unmatched",
                               ["Name", "Nationality", "Club", "HR ID"], rows, "step3_matched.csv")
+
     result = (
         f"Matched {before_unmatched - after_unmatched} new fencers. "
         f"{after_unmatched} still unmatched."
@@ -538,6 +553,94 @@ async def tool_match_fencers(ctx: RunContext[AgentDeps]) -> str:
         result += f" Unmatched: {', '.join(unmatched_names)}."
     result += " Thread tag: step3-match"
     return result
+
+
+@registration_agent.tool
+async def tool_correct_match(
+    ctx: RunContext[AgentDeps],
+    fencer_name: str,
+    correct_hr_id: int | None,
+) -> str:
+    """Fix a wrong step-3 match in fencers_matched.json and persist it so reruns stay correct.
+
+    fencer_name: registered name exactly as it appears in the matched fencers list.
+    correct_hr_id: the correct HEMA Ratings ID, or null if the fencer has no profile.
+    """
+    data_dir = ctx.deps.config.data_dir
+    fencers = load_fencers_list(data_dir, FENCERS_MATCHED_FILE)
+    if fencers is None:
+        return "No matched fencers file — run tool_match_fencers first."
+
+    cache_path = data_dir / FENCERS_CACHE_FILE
+    cache = _load_cache(cache_path)
+    corrections = load_corrections(data_dir)
+
+    # Find fencer by name — exact match first, then case-insensitive
+    target_idx: int | None = None
+    for i, f in enumerate(fencers):
+        if f.name == fencer_name:
+            target_idx = i
+            break
+    if target_idx is None:
+        for i, f in enumerate(fencers):
+            if f.name.lower() == fencer_name.lower():
+                target_idx = i
+                break
+    if target_idx is None:
+        return f"Fencer '{fencer_name}' not found in matched fencers."
+
+    fencer = fencers[target_idx]
+    old_hr_id = fencer.hr_id
+
+    if old_hr_id == correct_hr_id:
+        return f"No change needed: {fencer_name} already has hr_id={correct_hr_id}."
+
+    # Clean up old cache entry
+    if old_hr_id is not None:
+        old_key = str(old_hr_id)
+        if old_key in cache:
+            entry = cache[old_key]
+            name_lower = fencer.name.lower()
+            entry.alternative_names_used = [
+                n for n in entry.alternative_names_used if n.lower() != name_lower
+            ]
+            if fencer.email:
+                correct_key = str(correct_hr_id) if correct_hr_id is not None else None
+                email_in_correct = (
+                    correct_key is not None
+                    and correct_key in cache
+                    and fencer.email.lower() in {e.lower() for e in cache[correct_key].emails_used}
+                )
+                if not email_in_correct:
+                    entry.emails_used = [
+                        e for e in entry.emails_used if e.lower() != fencer.email.lower()
+                    ]
+
+    # Apply correction
+    fencers[target_idx] = fencer.model_copy(update={"hr_id": correct_hr_id})
+
+    # Add new cache entry
+    if correct_hr_id is not None:
+        _upsert_cache_entry(
+            cache, correct_hr_id,
+            fencer.name, fencer.club or "",
+            fencer.email or "",
+            fencer.nationality or None,
+            None,
+        )
+
+    # Persist correction so reruns reproduce the correct result
+    corrections[fencer_name] = correct_hr_id
+
+    save_fencers_list(fencers, data_dir / FENCERS_MATCHED_FILE)
+    _save_cache(cache, cache_path)
+    save_corrections(corrections, data_dir)
+
+    old_str = "no profile" if old_hr_id is None else f"hr_id={old_hr_id}"
+    new_str = "no profile" if correct_hr_id is None else f"hr_id={correct_hr_id}"
+    summary = f"Corrected: {fencer_name} → {new_str} (was {old_str})"
+    await _post_to_thread(ctx.deps, "step3-correct", summary)
+    return summary
 
 
 @registration_agent.tool

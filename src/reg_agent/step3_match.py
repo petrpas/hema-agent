@@ -477,3 +477,180 @@ def _load_matched_fencers(data_dir: Path) -> list[FencerRecord] | None:
 
 def _save_matched(fencers: list[FencerRecord], path: Path) -> None:
     save_fencers_list(fencers, path)
+
+
+# ---------------------------------------------------------------------------
+# Discord display helpers — table formatting for step-3 match results
+# ---------------------------------------------------------------------------
+
+_MATCH_TABLE_LEGEND = {
+    "EN": "_Match: `?` = auto-matched  `??` = auto-matched but email shared with another fencer (check carefully)  `!!` = self-reported ID rejected — HR row shows rejected profile_",
+    "CS": "_Shoda: `?` = automaticky spárováno  `??` = automaticky spárováno, ale e-mail sdílí více závodníků (zkontrolujte)  `!!` = uvedené HRID zamítnuto — řádek HR zobrazuje zamítnutý profil_",
+}
+
+_MATCH_TABLE_TEMPLATE = {
+    "CS": {
+        "header":    "## Výsledky párování na HR.",
+        "confirmed": "### Potvrzená shoda\n- šermíři, kteří uvedli HRID a odpovídá záznamu v HR.\n- bude použito shodné HRID a údaje z HR.",
+        "found":     "### Nalezená shoda\n- šermíři, kteří neuvedli HRID, ale podařilo se je dohledat v HR.\n- bude použito nalezené HRID a údaje z HR.",
+        "unmatched": "### Nenalezená shoda\n- šermíři, pro které se nepodařilo najít záznam v HR.\n- záznam zůstane prázdný k ručnímu doplnění",
+        "rejected":  "### Odmítnutá shoda\n- šermíři, kteří uvedli HRID, ale neodpovídá záznamu v HR.\n- záznam zůstane prázdný k ručnímu doplnění",
+    },
+    "EN": {
+        "header":    "## HR matching results.",
+        "confirmed": "### Confirmed match\n- fencers who provided their HR ID and it matched an HR record.\n- their matched HR ID and HR profile data will be used.",
+        "found":     "### Found match\n- fencers who did not provide an HR ID, but one was found in HR.\n- the found HR ID and HR profile data will be used.",
+        "unmatched": "### Unmatched\n- fencers for whom no matching HR record could be found.\n- their record will be left empty for manual completion.",
+        "rejected":  "### Rejected match\n- fencers who provided an HR ID, but it did not match an HR record.\n- their record will be left empty for manual completion.",
+    },
+}
+
+
+def _categorize_fencer(pf: FencerRecord, mf: FencerRecord) -> str:
+    """Return one of: confirmed / found / unmatched / rejected."""
+    orig_hr_id = pf.hr_id
+    final_hr_id = mf.hr_id
+    if orig_hr_id is not None and "rejected" in (mf.problems or ""):
+        return "rejected"
+    if final_hr_id is None:
+        return "unmatched"
+    if orig_hr_id is not None and final_hr_id == orig_hr_id:
+        return "confirmed"
+    return "found"
+
+
+def _match_table_chunks(
+    parsed_fencers: list[FencerRecord],
+    matched_fencers: list[FencerRecord],
+    hr_index: dict[int, tuple[str, str, str]],
+    language: str = "EN",
+    max_chunk: int = 1950,
+    proxy_emails: set[str] | None = None,
+) -> list[str]:
+    """Build step-3 matching table as a list of code-block strings.
+
+    Layout: Src | Name | Nat | Club | HRID | Match — fixed 108 chars wide.
+    Each matched fencer occupies two rows (Reg + HR), unmatched one row.
+    Pairs are never split across chunks.
+
+    Match column: empty = self-reported accepted, ? = auto-matched, !! = self-reported rejected.
+    For rejected fencers the HR row shows the (wrong) rejected profile.
+    """
+    W_SRC, W_NAME, W_NAT, W_CLUB, W_HRID, W_MATCH = 3, 25, 3, 40, 5, 5
+
+    def _cell(s: str, w: int, align: str = "left") -> str:
+        s = s[:w - 1] + "…" if len(s) > w else s
+        if align == "right":
+            body = s.rjust(w)
+        elif align == "center":
+            pad = w - len(s)
+            body = " " * (pad // 2) + s + " " * (pad - pad // 2)
+        else:
+            body = s.ljust(w)
+        return f" {body} "
+
+    def _row(src: str, name: str, nat: str, club: str, hrid: str, match: str) -> str:
+        return (
+            "│" + _cell(src, W_SRC, "center")
+            + "│" + _cell(name, W_NAME)
+            + "│" + _cell(nat, W_NAT, "center")
+            + "│" + _cell(club, W_CLUB)
+            + "│" + _cell(hrid, W_HRID, "right")
+            + "│" + _cell(match, W_MATCH, "center")
+            + "│"
+        )
+
+    def _rule(L: str, M: str, R: str) -> str:
+        segs = [W_SRC + 2, W_NAME + 2, W_NAT + 2, W_CLUB + 2, W_HRID + 2, W_MATCH + 2]
+        return L + M.join("─" * w for w in segs) + R
+
+    TOP    = _rule("┌", "┬", "┐")
+    SEP    = _rule("├", "┼", "┤")
+    BOT    = _rule("└", "┴", "┘")
+    HEADER = _row("Src", "Name", "Nat", "Club", "HRID", "Match")
+
+    # Build pair data
+    parsed_by_email = {(f.email or "").lower(): f for f in parsed_fencers}
+
+    # Detect proxy emails: one email used to register multiple different names
+    if proxy_emails is None:
+        from collections import defaultdict
+        email_names: dict[str, set[str]] = defaultdict(set)
+        for f in matched_fencers:
+            if f.email:
+                email_names[f.email.lower()].add(f.name.lower())
+        proxy_emails = {e for e, names in email_names.items() if len(names) > 1}
+
+    # Each pair: (reg_row_str, hr_row_str | None)
+    pairs: list[tuple[str, str | None]] = []
+
+    for mf in matched_fencers:
+        pf = parsed_by_email.get((mf.email or "").lower(), mf)
+        orig_hr_id = pf.hr_id   # self-reported (or None)
+        final_hr_id = mf.hr_id  # final value after matching
+        rejected = orig_hr_id is not None and "rejected" in (mf.problems or "")
+        is_proxy = (mf.email or "").lower() in proxy_emails
+
+        if rejected:
+            hrid_str = str(orig_hr_id)
+            match_marker = "!!"
+            lookup_id = orig_hr_id   # show the rejected profile in HR row
+        elif final_hr_id is not None:
+            if orig_hr_id is not None and final_hr_id == orig_hr_id:
+                match_marker = ""       # self-reported, accepted
+            elif is_proxy:
+                match_marker = "??"    # auto-matched but email is shared — proxy suspect
+            else:
+                match_marker = "?"     # regular auto-match
+            hrid_str = str(final_hr_id)
+            lookup_id = final_hr_id
+        else:
+            hrid_str = "—"
+            match_marker = ""
+            lookup_id = None
+
+        reg = _row("Reg", pf.name, pf.nationality or "", pf.club or "", hrid_str, match_marker)
+
+        if lookup_id is not None:
+            hr_name, hr_nat, hr_club = hr_index.get(lookup_id, ("", "", ""))
+            hr = _row(" HR", hr_name, hr_nat, hr_club, "", "")
+        else:
+            hr = None
+
+        pairs.append((reg, hr))
+
+    if not pairs:
+        return ["(no fencers)"]
+
+    # Chunk assembly — header + pairs + footer, never splitting a pair
+    chunk_header = "\n".join(["```", TOP, HEADER, SEP]) + "\n"
+    chunk_footer = BOT + "\n```"
+    overhead = len(chunk_header) + len(chunk_footer) + 1  # +1 for newline before footer
+
+    chunks: list[str] = []
+    body_lines: list[str] = []
+    body_size = 0
+
+    for reg, hr in pairs:
+        pair_lines = [reg, hr] if hr is not None else [reg]
+        # pair cost = rows + trailing separator (replaced by footer for last pair)
+        pair_cost = sum(len(line) + 1 for line in pair_lines) + len(SEP) + 1
+
+        if body_lines and overhead + body_size + pair_cost > max_chunk:
+            # Remove trailing SEP from previous pair, close chunk
+            if body_lines and body_lines[-1] == SEP:
+                body_lines.pop()
+            chunks.append(chunk_header + "\n".join(body_lines) + "\n" + chunk_footer)
+            body_lines = []
+            body_size = 0
+
+        body_lines.extend(pair_lines)
+        body_lines.append(SEP)
+        body_size += pair_cost
+
+    if body_lines:
+        if body_lines[-1] == SEP:
+            body_lines.pop()
+        chunks.append(chunk_header + "\n".join(body_lines) + "\n" + chunk_footer)
+
+    return chunks

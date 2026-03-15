@@ -2,6 +2,7 @@
 
 import json
 import logging
+import textwrap
 
 from config.tracing import observe
 from jinja2 import Template
@@ -232,3 +233,79 @@ def deduplicate_fencers(
     save_fencers_list(result, out_path)
     fp_path.write_text(current_fp)
     return result, report, likely_groups
+
+
+# ---------------------------------------------------------------------------
+# Discord display helpers — table formatting for step-4 dedup results
+# ---------------------------------------------------------------------------
+
+_NOTES_WRAP = 30
+_DEDUP_FIELDS = ["Name", "Nationality", "Club", "Disciplines", "HR ID", "Notes"]
+
+
+def _extract_dedup_fields(f: FencerRecord) -> dict[str, str]:
+    return {
+        "Name": f.name,
+        "Nationality": f.nationality or "",
+        "Club": f.club or "",
+        "Disciplines": " / ".join(d.str() for d in f.disciplines),
+        "HR ID": str(f.hr_id) if f.hr_id else "",
+        "Notes": f.notes or "",
+    }
+
+
+def _transposed_dedup_table_text(
+    records: list[FencerRecord],
+    col_labels: list[str],
+    note: str | None = None,
+) -> str:
+    """Transposed dedup table: fields as rows, records as columns. Notes are line-wrapped."""
+    all_data = [_extract_dedup_fields(r) for r in records]
+    for d in all_data:
+        if d["Notes"]:
+            d["Notes"] = "\n".join(textwrap.wrap(d["Notes"], _NOTES_WRAP))
+
+    field_col_w = max(len("Field"), max(len(fn) for fn in _DEDUP_FIELDS))
+    col_widths = [field_col_w]
+    for i, label in enumerate(col_labels):
+        w = len(label)
+        for fn in _DEDUP_FIELDS:
+            for segment in all_data[i][fn].split("\n"):
+                w = max(w, len(segment))
+        col_widths.append(w)
+
+    def _pad(s: str, w: int) -> str:
+        return s.ljust(w)
+
+    def _row(cells: list[str]) -> str:
+        return "│ " + " │ ".join(_pad(cells[i], col_widths[i]) for i in range(len(cells))) + " │"
+
+    def _rule(lft: str, mid: str, rgt: str) -> str:
+        return lft + mid.join("─" * (w + 2) for w in col_widths) + rgt
+
+    out: list[str] = ["```"]
+    out.append(_rule("┌", "┬", "┐"))
+    out.append(_row(["Field"] + col_labels))
+    out.append(_rule("├", "┼", "┤"))
+    for fn in _DEDUP_FIELDS:
+        cell_splits = [[fn]] + [all_data[i][fn].split("\n") for i in range(len(records))]
+        max_lines = max(len(s) for s in cell_splits)
+        for li in range(max_lines):
+            out.append(_row([s[li] if li < len(s) else "" for s in cell_splits]))
+    out.append(_rule("└", "┴", "┘"))
+    out.append("```")
+
+    result = "\n".join(out)
+    if note:
+        result += f"\n_{note}_"
+    return result
+
+
+def _dedup_table_text(inputs: list[FencerRecord], merged: FencerRecord, note: str) -> str:
+    labels = [f"record {i + 1}" for i in range(len(inputs))] + ["→ final"]
+    return _transposed_dedup_table_text(list(inputs) + [merged], labels, note=note)
+
+
+def _dedup_likely_table_text(group: list[FencerRecord]) -> str:
+    labels = [f"record {i + 1}" for i in range(len(group))]
+    return _transposed_dedup_table_text(group, labels)
