@@ -21,6 +21,7 @@ from utils import load_fencers_list, save_fencers_list, to_nat_code, FENCERS_MAT
 FIGHTERS_URL = "https://hemaratings.com/fighters/"
 FIGHTERS_CACHE_FILENAME = "hemaratings_fighters.html"
 FIGHTERS_PARSED_FILENAME = "hemaratings_fighters.csv"
+MATCH_CORRECTIONS_FILE = "match_corrections.json"
 
 SYSTEM_PROMPT = """You are a data assistant for HEMA (Historical European Martial Arts) tournaments.
 You will receive:
@@ -83,19 +84,24 @@ def _parse_fighters_html(html: str) -> list[tuple[int, str, str, str]]:
     """Extract (hr_id, name, nationality, club) from the fighters page HTML."""
     # Each row: <td><a href="/fighters/details/ID/">Name</a></td>
     #           <td data-search="Country">...</td>
-    #           <td><a href="/clubs/.../">Club</a></td>
-    row_pattern = re.compile(
-        r'href="/fighters/details/(\d+)/">([^<]+)</a>'
-        r'.*?data-search="([^"]+)"'
-        r'.*?href="/clubs/[^"]+/">([^<]+)</a>',
-        re.DOTALL,
-    )
+    #           <td>[optional: <a href="/clubs/.../">Club</a>]</td>
+    # Parse row-by-row to avoid the club from the next row bleeding into a
+    # fighter whose club cell is empty.
+    fighter_re = re.compile(r'href="/fighters/details/(\d+)/">([^<]+)</a>', re.DOTALL)
+    nat_re     = re.compile(r'data-search="([^"]+)"')
+    club_re    = re.compile(r'href="/clubs/[^"]+/">([^<]+)</a>')
+
     fighters = []
-    for m in row_pattern.finditer(html):
-        hr_id = int(m.group(1))
-        name = m.group(2).strip()
-        nationality = m.group(3).strip()
-        club = m.group(4).strip()
+    for row in re.split(r'(?=<tr[\s>])', html):
+        fm = fighter_re.search(row)
+        if not fm:
+            continue
+        nm = nat_re.search(row)
+        cm = club_re.search(row)
+        hr_id       = int(fm.group(1))
+        name        = fm.group(2).strip()
+        nationality = nm.group(1).strip() if nm else ""
+        club        = cm.group(1).strip() if cm else ""
         fighters.append((hr_id, name, nationality, club))
     return fighters
 
@@ -185,7 +191,12 @@ def _prefilter_candidates(
     return "\n".join(candidate_lines)
 
 
-def _call_llm(need_llm: list[FencerRecord], fighters_text: str, config: RegConfig) -> dict[str, dict]:
+def _call_llm(
+    need_llm: list[FencerRecord],
+    fighters_text: str,
+    config: RegConfig,
+    instructions: str | None = None,
+) -> dict[str, dict]:
     """Return match info keyed by email."""
     candidates_text = _prefilter_candidates(need_llm, fighters_text)
     logger.info(f"Sending {len(candidates_text.splitlines())} candidate fighters to LLM for {len(need_llm)} fencers ...")
@@ -201,12 +212,29 @@ def _call_llm(need_llm: list[FencerRecord], fighters_text: str, config: RegConfi
         system_prompt=SYSTEM_PROMPT,
         retries=3,
     )
-    result = agent.run_sync(
+    user_prompt = (
         f"Unmatched fencers:\n{unmatched_text}\n\n"
         f"Candidate fighters (id;name;nationality;club):\n{candidates_text}"
     )
+    if instructions:
+        user_prompt += f"\n\nAdditional organiser instructions:\n{instructions}"
+    result = agent.run_sync(user_prompt)
     logger.info("LLM matching complete")
     return {m.email: m.model_dump() for m in result.output.matches}
+
+
+def load_corrections(data_dir: Path) -> dict[str, int | None]:
+    import json as _json
+    path = data_dir / MATCH_CORRECTIONS_FILE
+    if not path.exists():
+        return {}
+    return _json.loads(path.read_text(encoding="utf-8"))
+
+
+def save_corrections(corrections: dict[str, int | None], data_dir: Path) -> None:
+    import json as _json
+    path = data_dir / MATCH_CORRECTIONS_FILE
+    path.write_text(_json.dumps(corrections, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def _load_cache(cache_path: Path) -> dict[str, CacheEntry]:
@@ -245,6 +273,15 @@ def _cache_lookup_by_name(cache: dict[str, CacheEntry], full_name: str) -> Cache
     return None
 
 
+def _email_owned_by_other(cache: dict[str, CacheEntry], email: str, exclude_key: str) -> bool:
+    """Return True if email already appears in a different cache entry (proxy registration guard)."""
+    email_lower = email.lower()
+    return any(
+        k != exclude_key and email_lower in {e.lower() for e in v.emails_used}
+        for k, v in cache.items()
+    )
+
+
 def _upsert_cache_entry(
     cache: dict[str, CacheEntry],
     hr_id: int,
@@ -256,24 +293,34 @@ def _upsert_cache_entry(
 ) -> None:
     key = str(hr_id)
     if key not in cache:
+        owned_elsewhere = email and _email_owned_by_other(cache, email, key)
+        if owned_elsewhere:
+            logger.warning(f"Email {email} already owned by another entry — not adding to hr_id={hr_id} ({full_name})")
         cache[key] = CacheEntry(
             full_name=full_name,
             club=club,
             nationality=to_nat_code(nationality) or "",
             hr_id=hr_id,
-            emails_used=[email] if email else [],
+            emails_used=[email] if email and not owned_elsewhere else [],
             alternative_names_used=[alt_name] if alt_name else [],
         )
     else:
         entry = cache[key]
         if email and email not in entry.emails_used:
-            entry.emails_used.append(email)
+            if _email_owned_by_other(cache, email, key):
+                logger.warning(f"Email {email} already owned by another entry — not adding to hr_id={hr_id} ({full_name})")
+            else:
+                entry.emails_used.append(email)
         if alt_name and alt_name not in entry.alternative_names_used:
             entry.alternative_names_used.append(alt_name)
 
 
 @observe(capture_input=False, capture_output=False)
-def match_fencers(fencers: list[FencerRecord], config: RegConfig) -> list[FencerRecord]:
+def match_fencers(
+    fencers: list[FencerRecord],
+    config: RegConfig,
+    instructions: str | None = None,
+) -> list[FencerRecord]:
     """Enrich fencers with hr_id via cache lookup and LLM fuzzy matching."""
     data_dir = config.data_dir
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -289,6 +336,28 @@ def match_fencers(fencers: list[FencerRecord], config: RegConfig) -> list[Fencer
     for fencer in fencers:
         if fencer.hr_id is not None:
             hr_name, hr_nat, hr_club = hr_index.get(fencer.hr_id, (None, None, None))
+            # Validate self-reported hr_id against the HR profile name.
+            # If names share no tokens and similarity is very low, the id is likely fake/wrong.
+            if hr_name and _normalize(fencer.name) != _normalize(hr_name):
+                ratio = difflib.SequenceMatcher(None, _normalize(fencer.name), _normalize(hr_name)).ratio()
+                fencer_tokens = set(_normalize(fencer.name).split())
+                hr_tokens = set(_normalize(hr_name).split())
+                if ratio < 0.4 and not fencer_tokens & hr_tokens:
+                    logger.warning(
+                        f"Rejecting self-reported hr_id={fencer.hr_id} for '{fencer.name}': "
+                        f"HR profile is '{hr_name}' (ratio={ratio:.2f}) — routing to LLM"
+                    )
+                    problems_note = (
+                        f"Self-reported hr_id {fencer.hr_id} ({hr_name}) rejected: "
+                        f"name mismatch (similarity={ratio:.2f})"
+                    )
+                    cleared = fencer.model_copy(update={
+                        "hr_id": None,
+                        "problems": (fencer.problems + " | " if fencer.problems else "") + problems_note,
+                    })
+                    need_llm.append(cleared)
+                    updated_fencers.append(cleared)
+                    continue
             _upsert_cache_entry(
                 cache, fencer.hr_id,
                 hr_name or fencer.name,
@@ -299,7 +368,7 @@ def match_fencers(fencers: list[FencerRecord], config: RegConfig) -> list[Fencer
             )
             updated_fencers.append(fencer.model_copy(update={
                 "nationality": fencer.nationality or hr_nat or "",
-                "club": fencer.club or hr_club,
+                "club": hr_club or fencer.club,
             }))
             continue
 
@@ -308,7 +377,7 @@ def match_fencers(fencers: list[FencerRecord], config: RegConfig) -> list[Fencer
             matched = fencer.model_copy(update={
                 "hr_id": entry.hr_id,
                 "nationality": fencer.nationality or to_nat_code(entry.nationality) or "",
-                "club": fencer.club or entry.club or None,
+                "club": entry.club or fencer.club or None,
             })
             _upsert_cache_entry(
                 cache, entry.hr_id,
@@ -324,7 +393,7 @@ def match_fencers(fencers: list[FencerRecord], config: RegConfig) -> list[Fencer
 
     if need_llm:
         logger.info(f"LLM matching {len(need_llm)} unmatched fencers ...")
-        match_by_email = _call_llm(need_llm, fighters_text, config)
+        match_by_email = _call_llm(need_llm, fighters_text, config, instructions)
 
         for i, fencer in enumerate(updated_fencers):
             if fencer not in need_llm:
@@ -347,6 +416,53 @@ def match_fencers(fencers: list[FencerRecord], config: RegConfig) -> list[Fencer
                 logger.info(f"LLM matched: {fencer.name} → hr_id={m['hr_id']}")
             else:
                 logger.warning(f"No match found for: {fencer.name}")
+
+    # Apply persisted corrections — always wins over cache/LLM result
+    corrections = load_corrections(data_dir)
+    if corrections:
+        corrections_lower = {k.lower(): (k, v) for k, v in corrections.items()}
+        for i, fencer in enumerate(updated_fencers):
+            key = fencer.name.lower()
+            if key not in corrections_lower:
+                continue
+            _, correct_hr_id = corrections_lower[key]
+            old_hr_id = fencer.hr_id
+            if old_hr_id == correct_hr_id:
+                continue
+            logger.info(f"Applying correction: {fencer.name} → hr_id={correct_hr_id} (was {old_hr_id})")
+            # Clean up old cache entry
+            if old_hr_id is not None:
+                old_key = str(old_hr_id)
+                if old_key in cache:
+                    entry = cache[old_key]
+                    name_lower = fencer.name.lower()
+                    entry.alternative_names_used = [
+                        n for n in entry.alternative_names_used if n.lower() != name_lower
+                    ]
+                    if fencer.email:
+                        correct_key = str(correct_hr_id) if correct_hr_id is not None else None
+                        email_in_correct = (
+                            correct_key is not None
+                            and correct_key in cache
+                            and fencer.email.lower() in {e.lower() for e in cache[correct_key].emails_used}
+                        )
+                        if not email_in_correct:
+                            entry.emails_used = [
+                                e for e in entry.emails_used if e.lower() != fencer.email.lower()
+                            ]
+            # Apply correction
+            updated_fencers[i] = fencer.model_copy(update={"hr_id": correct_hr_id})
+            # Add new cache entry
+            if correct_hr_id is not None:
+                hr_name, hr_nat, hr_club = hr_index.get(correct_hr_id, (None, None, None))
+                _upsert_cache_entry(
+                    cache, correct_hr_id,
+                    hr_name or fencer.name,
+                    hr_club or fencer.club or "",
+                    fencer.email or "",
+                    hr_nat or fencer.nationality or None,
+                    fencer.name if hr_name and _normalize(fencer.name) != _normalize(hr_name) else None,
+                )
 
     _save_cache(cache, cache_path)
 
