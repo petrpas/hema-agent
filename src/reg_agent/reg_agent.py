@@ -42,6 +42,7 @@ from step3_match import (
     _load_cache,
     _save_cache,
     _upsert_cache_entry,
+    _normalize,
     _build_hr_index,
     _get_fighters_compact,
     _categorize_fencer,
@@ -514,10 +515,11 @@ async def tool_match_fencers(ctx: RunContext[AgentDeps]) -> str:
         proxy_emails = {e for e, names in email_names.items() if len(names) > 1}
 
         # Categorize fencers
-        parsed_by_email = {(f.email or "").lower(): f for f in parsed_fencers}
+        # Key by name — more unique than email (proxy fencers share email).
+        parsed_by_name = {_normalize(f.name): f for f in parsed_fencers}
         groups: dict[str, list[FencerRecord]] = {"confirmed": [], "found": [], "unmatched": [], "rejected": []}
         for mf in fencers:
-            pf = parsed_by_email.get((mf.email or "").lower(), mf)
+            pf = parsed_by_name.get(_normalize(mf.name), mf)
             groups[_categorize_fencer(pf, mf)].append(mf)
 
         SECTION_ORDER = ["confirmed", "found", "unmatched", "rejected"]

@@ -570,7 +570,8 @@ def _match_table_chunks(
     HEADER = _row("Src", "Name", "Nat", "Club", "HRID", "Match")
 
     # Build pair data
-    parsed_by_email = {(f.email or "").lower(): f for f in parsed_fencers}
+    # Key by normalised name — more unique than email (proxy fencers share email).
+    parsed_by_name = {_normalize(f.name): f for f in parsed_fencers}
 
     # Detect proxy emails: one email used to register multiple different names
     if proxy_emails is None:
@@ -585,7 +586,7 @@ def _match_table_chunks(
     pairs: list[tuple[str, str | None]] = []
 
     for mf in matched_fencers:
-        pf = parsed_by_email.get((mf.email or "").lower(), mf)
+        pf = parsed_by_name.get(_normalize(mf.name), mf)
         orig_hr_id = pf.hr_id   # self-reported (or None)
         final_hr_id = mf.hr_id  # final value after matching
         rejected = orig_hr_id is not None and "rejected" in (mf.problems or "")
