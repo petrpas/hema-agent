@@ -34,6 +34,46 @@ Postup pro google sešit:
 """,
 }
 
+SHEET_CLONE_REQUEST = {
+    "EN": """\
+📄 Output sheet ready: {url}
+
+The sheet is currently owned by the bot account.
+
+To keep full control of your data, please:
+
+1. Open the link above and make a copy (**File → Make a copy**) to your own Google account.
+2. Share the copy with me (Editor access):
+   📧 `{bot_email}`
+3. Paste the link to your copy here.
+
+All further updates will be made to this new version.
+
+If you decide not to share it, I will continue making changes to the original
+and you can copy them over manually.
+
+""",
+    "CS": """\
+📄 Výstupní sešit je připraven: {url}
+
+Sešit je momentálně ve vlastnictví účtu Panoše. 
+
+Abys měl nad svými daty plnou kontrolu, prosím:
+
+1. Otevři odkaz výše a vytvoř kopii (**Soubor → Vytvořit kopii**) na svůj Google účet.
+2. Sdílej kopii se mnou (přístup Editor):
+  - 📧 `{bot_email}`
+  - (stačí zaškrtnout Sdílet se stejnými lidmi)
+3. Vlož sem odkaz na tuto novou kopii.
+
+Všechny další změny budu provádět v této nové verzi.
+
+    Pokud se rozhodneš přístup mi nedat, budu změny provádět 
+v původní verzi a ty si je můžeš ručně překopírovat.
+
+""",
+}
+
 SETUP_WELCOME = f"""\
 ## {APP_NAME} Setup
 

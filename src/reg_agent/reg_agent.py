@@ -9,6 +9,7 @@ import asyncio
 import csv
 import io
 import logging
+import os
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, UTC
@@ -28,10 +29,10 @@ from pydantic_ai import Agent, RunContext
 
 langfuse = get_langfuse_client()
 
-from config import RegConfig
+from config import RegConfig, RegUserConfig, save_config
 from discord_bot.discord_utils import send_long
 from models import FencerRecord
-from discord_bot.msg_constants import SHEET_ACCESS_REQUEST
+from discord_bot.msg_constants import SHEET_ACCESS_REQUEST, SHEET_CLONE_REQUEST
 from setup_agent.setup_agent import SHARED_MEMORY_PATH
 from step1_download import download_registrations
 from step2_parse import parse_registrations
@@ -58,7 +59,7 @@ from step4_dedup import (
     _dedup_likely_table_text,
 )
 from step5_ratings import fetch_ratings
-from step6_upload import upload_results
+from step6_upload import upload_results, upload_results_initial, setup_output_sheet
 from utils import (
     load_fencers_list,
     save_fencers_list,
@@ -122,6 +123,10 @@ Never expose implementation details to the organiser. This means:
        call `tool_merge_confirmed_duplicates` before `tool_fetch_ratings`.
 5. `tool_fetch_ratings`               — fetch current ratings from hemaratings.com
 6. `tool_upload_results`              — write enriched data to the output Google Sheet
+   After an initial upload (fresh sheet), the bot posts a clone request to the channel.
+   When the organiser replies with a link to their own copy, call `tool_set_output_sheet`
+   to update the URL. Do NOT advance to step 7 until the organiser has provided their copy link
+   or explicitly said they do not want to clone the sheet.
 7. Payment matching                   — **not yet implemented**; mention this to the organiser and skip
 8. Group seeding                      — **not yet implemented**; mention this to the organiser and skip
 
@@ -878,8 +883,12 @@ async def tool_fetch_ratings(ctx: RunContext[AgentDeps]) -> str:
 
 
 @registration_agent.tool
-async def tool_upload_results(ctx: RunContext[AgentDeps]) -> str:
-    """Step 6: Write enriched data to the output Google Sheet."""
+async def tool_upload_results(ctx: RunContext[AgentDeps], force_recreate: bool = False) -> str:
+    """Step 6: Write enriched data to the output Google Sheet.
+
+    force_recreate: if True, copy the template again and replace the existing output sheet URL.
+    Use this when the organiser asks to regenerate the sheet from scratch.
+    """
     fencers = load_fencers_list(ctx.deps.config.data_dir, FENCERS_DEDUPED_FILE)
     if fencers is None:
         return "No deduplicated fencers found — run tool_deduplicate_fencers first."
@@ -894,12 +903,73 @@ async def tool_upload_results(ctx: RunContext[AgentDeps]) -> str:
 
     if err := _once_per_turn(ctx.deps, "tool_upload_results"):
         return err
+
+    sheet_just_created = ctx.deps.config.output_sheet_url is None or force_recreate
+    if sheet_just_created:
+        try:
+            url = await asyncio.to_thread(setup_output_sheet, ctx.deps.config)
+        except Exception as e:
+            return f"error setting up output sheet: {e}"
+        ctx.deps.config.output_sheet_url = url
+        user_config_path = os.environ.get("USER_CONFIG")
+        save_config(
+            RegUserConfig(
+                tournament_name=ctx.deps.config.tournament_name,
+                language=ctx.deps.config.language,
+                output_sheet_url=url,
+                disciplines=ctx.deps.config.disciplines,
+            ),
+            user_config_path,
+        )
+        await _post_to_thread(ctx.deps, "step6-sheet-created", f"📄 Output sheet created: {url}")
+
+    upload_fn = upload_results_initial if sheet_just_created else upload_results
     try:
-        await asyncio.to_thread(upload_results, fencers, ratings, ctx.deps.config)
+        await asyncio.to_thread(upload_fn, fencers, ratings, ctx.deps.config)
     except Exception as e:
         return f"error: {e}"
     await _post_to_thread(ctx.deps, "step6-upload", "✅ 6 — upload complete")
-    return "Upload complete. Output sheet updated."
+
+    if sheet_just_created:
+        lang = ctx.deps.config.language
+        tmpl = SHEET_CLONE_REQUEST.get(lang, SHEET_CLONE_REQUEST["EN"])
+        bot_email = _bot_email(ctx.deps.config)
+        await ctx.deps.channel.send(tmpl.format(url=ctx.deps.config.output_sheet_url, bot_email=bot_email))
+        return (
+            f"Upload complete. Output sheet: {ctx.deps.config.output_sheet_url}. "
+            f"Waiting for the organiser to clone the sheet and share their copy."
+        )
+
+    return f"Upload complete. Output sheet: {ctx.deps.config.output_sheet_url}"
+
+
+@registration_agent.tool
+async def tool_set_output_sheet(ctx: RunContext[AgentDeps], url: str) -> str:
+    """Update the output sheet URL after the organiser shares their own copy with the bot.
+
+    Call this when the organiser pastes a link to their cloned copy of the output sheet.
+    Verifies access, updates the running config, and persists the new URL to user_config.json.
+    """
+    import gspread as _gs
+    try:
+        gc = _gs.service_account(filename=ctx.deps.config.creds_path)
+        gc.open_by_url(url)
+    except Exception as e:
+        return f"error: cannot access the sheet: {e}"
+
+    ctx.deps.config.output_sheet_url = url
+    user_config_path = os.environ.get("USER_CONFIG")
+    save_config(
+        RegUserConfig(
+            tournament_name=ctx.deps.config.tournament_name,
+            language=ctx.deps.config.language,
+            output_sheet_url=url,
+            disciplines=ctx.deps.config.disciplines,
+        ),
+        user_config_path,
+    )
+    await _post_to_thread(ctx.deps, "step6-sheet-updated", f"📄 Output sheet URL updated: {url}")
+    return f"Output sheet URL updated. Future uploads will use: {url}"
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────

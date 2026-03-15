@@ -1,6 +1,7 @@
 """Step 6: Upload enriched fencer data to the output Google Sheet using LLM + gspread tools."""
 
 import logging
+import re
 from dataclasses import dataclass
 
 import gspread
@@ -260,6 +261,100 @@ def upload_discipline(discipline_code: str, fencers: list[FencerRecord], ratings
     data_prompt = _build_data_prompt(discipline_code, fencers, ratings)
 
     update_sheet_agent_run(config, sh, discipline_code, system_prompt, data_prompt)
+
+
+def setup_output_sheet(config: RegConfig) -> str:
+    """Copy the output template, create per-discipline worksheets, return the new sheet URL."""
+    m = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", config.output_template)
+    if not m:
+        raise ValueError(f"Cannot extract sheet ID from output_template: {config.output_template}")
+    template_id = m.group(1)
+
+    tournament_title = config.tournament_name.replace("_", " ").title()
+    logger.info("Copying template sheet %s → '%s' ...", template_id, tournament_title)
+    gc = gspread.service_account(filename=config.creds_path)
+    sh = gc.copy(template_id, title=f"{tournament_title} Fencers", copy_permissions=False)
+    logger.info("New spreadsheet id=%s", sh.id)
+
+    disciplines_ws = sh.worksheet("Discipline")
+    for code in config.disciplines:
+        logger.info("Duplicating Disciplines → %s", code)
+        sh.duplicate_sheet(disciplines_ws.id, new_sheet_name=code)
+    sh.del_worksheet(disciplines_ws)
+
+    fencers_ws = sh.worksheet(FENCERS_WORKSHEET)
+    discipline_worksheets = [sh.worksheet(code) for code in config.disciplines]
+    sh.reorder_worksheets([fencers_ws] + discipline_worksheets)
+    logger.info("Worksheets reordered: %s", [FENCERS_WORKSHEET] + list(config.disciplines))
+
+    sh.share(None, perm_type="anyone", role="writer")  # type: ignore[arg-type]
+    logger.info("Shared with anyone-with-link (writer)")
+
+    url = f"https://docs.google.com/spreadsheets/d/{sh.id}/edit"
+    logger.info("Output sheet ready: %s", url)
+    return url
+
+
+def write_fencers_initial(fencers: list[FencerRecord], sh: gspread.Spreadsheet) -> None:
+    """Batch-write all fencers to the Fencers worksheet (fresh sheet, no LLM)."""
+    ws = sh.worksheet(FENCERS_WORKSHEET)
+    rows = []
+    for f in fencers:
+        rows.append([
+            f.name,
+            f.nationality or "",
+            f.club or "",
+            f.hr_id if f.hr_id is not None else "",
+            ",".join(d.str() for d in f.disciplines),
+            "",  # Paid — never written
+            f.after_party or "",
+            ",".join(f.borrow) if f.borrow else "",
+            f.notes or "",
+        ])
+    if rows:
+        ws.update(rows, "B2")
+    logger.info("Fencers worksheet written: %d rows", len(rows))
+
+
+def write_discipline_initial(
+    discipline_code: str,
+    fencers: list[FencerRecord],
+    ratings: dict[int, dict[str, FencerRating]],
+    sh: gspread.Spreadsheet,
+) -> None:
+    """Batch-write one discipline worksheet (fresh sheet, no LLM)."""
+    registered = [f for f in fencers if any(d.str() == discipline_code for d in f.disciplines)]
+    ws = sh.worksheet(discipline_code)
+    rows = []
+    for i, f in enumerate(registered, 1):
+        rating = ratings.get(f.hr_id, {}).get(discipline_code) if f.hr_id else None
+        rows.append([
+            i,
+            f.name,
+            f.nationality or "",
+            f.club or "",
+            f.hr_id if f.hr_id is not None else "",
+            rating.rating if rating and rating.rating is not None else "",
+            rating.rank if rating and rating.rank is not None else "",
+        ])
+    if rows:
+        ws.update(rows, "A2")
+    logger.info("Discipline %s written: %d rows", discipline_code, len(rows))
+
+
+@observe(capture_input=False, capture_output=False)
+def upload_results_initial(
+    fencers: list[FencerRecord],
+    ratings: dict[int, dict[str, FencerRating]],
+    config: RegConfig,
+) -> None:
+    """Direct-write all data to a fresh output sheet (no LLM)."""
+    gc = gspread.service_account(filename=config.creds_path)
+    sh = gc.open_by_url(config.output_sheet_url)
+    write_fencers_initial(fencers, sh)
+    for discipline in config.disciplines:
+        write_discipline_initial(discipline, fencers, ratings, sh)
+    logger.info("Initial upload complete")
 
 
 @observe(capture_input=False, capture_output=False)
