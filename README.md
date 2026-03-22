@@ -22,18 +22,9 @@ It helps the HEMA Tournament organiser with various administrative tasks
   - `#setup` — configure the tournament (name, disciplines, sheet URLs) on first boot
   - `#reg-agent` — run and monitor the registration pipeline
 
-## Registration pipeline
+## Fencer registration pipeline
 
-The reg-agent processes registrations in six steps:
-
-| Step | What it does |
-|---|---|
-| 1. Download | Downloads the Google Form registration sheet as a versioned CSV |
-| 2. Parse | LLM extracts structured fencer records from the raw CSV |
-| 3. Match | LLM fuzzy-matches registrations to HEMA Ratings profiles |
-| 4. Dedup | LLM merges duplicate registrations for the same fencer |
-| 5. Ratings | Scrapes current ratings and rankings from hemaratings.com |
-| 6. Upload | Writes enriched data back to the output Google Sheet |
+See the **[reg-agent](src/reg_agent/README.md)** docs
 
 ## Deployment
 

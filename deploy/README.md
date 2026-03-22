@@ -35,9 +35,22 @@ flyctl auth login
 5. Click **Reset Token** and copy the token — you'll paste it into your `.conf` file.
 6. To invite the bot, construct the invite URL manually (the portal generator is unreliable):
    ```
-   https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=68624&scope=bot+applications.commands
+   https://discord.com/oauth2/authorize?client_id=YOUR_CLIENT_ID&permissions=309237754896&scope=bot+applications.commands
    ```
    Replace `YOUR_CLIENT_ID` with the **Application ID** from **General Information**. Open the URL in a browser to add the bot to your server.
+
+   The permissions integer (`309237754896`) grants exactly what the bot needs:
+
+   | Permission | Why |
+   |---|---|
+   | View Channels | Read channels |
+   | Send Messages | Post in text channels |
+   | Manage Channels | Create `#setup` and `#registration` channels |
+   | Read Message History | `/clear` and agent read channel history |
+   | Manage Messages | `/clear` bulk-deletes messages |
+   | Attach Files | Step results sent as file attachments in threads |
+   | Create Public Threads | Payments thread and per-step result threads |
+   | Send Messages in Threads | Respond inside those threads |
 
 ---
 
@@ -140,3 +153,6 @@ flyctl logs --app hema-agent-na2025
 | Bot appears online but doesn't respond | Check that **Message Content Intent** is enabled in the Discord Developer Portal. |
 | `flyctl: command not found` | Re-run the install from step 2 and make sure `~/.fly/bin` is on your `PATH`. |
 | Setup agent not creating channels | The bot needs **Manage Channels** permission — re-invite with the correct OAuth URL. |
+| `/clear` fails with 403 Forbidden | The bot needs **Manage Messages** permission — re-invite with the correct OAuth URL. |
+| Thread creation fails with 403 Forbidden | The bot needs **Create Public Threads** permission — re-invite with the correct OAuth URL. |
+| Bot can't send files in threads | The bot needs **Attach Files** permission — re-invite with the correct OAuth URL. |

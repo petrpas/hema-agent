@@ -188,7 +188,9 @@ class SetupCog(commands.Cog):
         self._running.add(message.channel.id)
         try:
             async with message.channel.typing():
-                await run_setup_agent(message.channel, message.content)
+                user_config_path = os.environ.get("USER_CONFIG")
+                kwargs = {"user_config_path": Path(user_config_path)} if user_config_path else {}
+                await run_setup_agent(message.channel, message.content, **kwargs)
         finally:
             self._running.discard(message.channel.id)
 

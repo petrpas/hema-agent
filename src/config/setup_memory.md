@@ -1,6 +1,4 @@
-- [2026-03-14 17:34 UTC] Preferred language: CS. ALWAYS use CS when writing messages to the organiser. Internal reasoning, tool call arguments, and all other agent outputs remain in English.
-- [2026-03-14 17:35 UTC] Tournament name: Na Duel! 2025!
-- [2026-03-14 18:39 UTC] Registration sheet URL: https://docs.google.com/spreadsheets/d/1_Bdvbdexkt4lo2fduL2gF6peeWkxdgC4Jlxu2px0kO8/edit?usp=sharing
-- [2026-03-14 18:39 UTC] Registration sheet URL: https://docs.google.com/spreadsheets/d/1_Bdvbdexkt4lo2fduL2gF6peeWkxdgC4Jlxu2px0kO8/edit?usp=sharing
-- [2026-03-14 18:39 UTC] Registration sheet access verified: https://docs.google.com/spreadsheets/d/1_Bdvbdexkt4lo2fduL2gF6peeWkxdgC4Jlxu2px0kO8/edit?usp=sharing
-- [2026-03-14 18:39 UTC] Registration sheet access verified
+- [2026-03-15 00:03 UTC] registration sheet URL: https://docs.google.com/spreadsheets/d/1_Bdvbdexkt4lo2fduL2gF6peeWkxdgC4Jlxu2px0kO8/edit?usp=sharing
+- [2026-03-15 00:03 UTC] registration sheet access verified
+- [2026-03-15 17:49 UTC] Duelanti club members get 50% discount on entry fee.
+- [2026-03-15 18:39 UTC] [payment-hint] Martin Vrabel zaplatil 900 v hotovosti (keši).

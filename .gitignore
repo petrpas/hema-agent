@@ -212,3 +212,5 @@ src/config/user_config.json
 creds.json
 deploy/*.conf
 
+/src/hema-squire-416644330fc8.json
+/src/_creds.json
