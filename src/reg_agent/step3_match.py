@@ -114,6 +114,51 @@ def _build_hr_index(fighters_text: str) -> dict[int, tuple[str, str, str]]:
     return index
 
 
+_PROFILE_NAME_RE  = re.compile(r'<h2>([^<]+)</h2>')
+_PROFILE_FLAG_RE  = re.compile(r'flag-icon-([a-z]{2})\b')
+_PROFILE_CLUB_RE  = re.compile(r'href="/clubs/details/\d+/">([^<]+)</a>')
+
+
+def _parse_profile_html(html: str) -> tuple[str, str, str]:
+    """Extract (name, nat_code, club) from an individual fighter profile page."""
+    nm = _PROFILE_NAME_RE.search(html)
+    fm = _PROFILE_FLAG_RE.search(html)
+    cm = _PROFILE_CLUB_RE.search(html)
+    name = html_mod.unescape(nm.group(1)).strip() if nm else ""
+    nat  = fm.group(1).upper() if fm else ""
+    club = html_mod.unescape(cm.group(1)).strip() if cm else ""
+    return name, nat, club
+
+
+def _enrich_hr_index(
+    hr_ids: set[int],
+    hr_index: dict[int, tuple[str, str, str]],
+    data_dir,
+) -> None:
+    """Fetch individual profile pages for confirmed hr_ids absent from hr_index."""
+    from step5_ratings import _get_fighter_html
+
+    missing = hr_ids - hr_index.keys()
+    if not missing:
+        return
+    logger.info(f"Enriching hr_index: fetching {len(missing)} missing profile(s) ...")
+    fetched = 0
+    for hr_id in sorted(missing):
+        try:
+            html = _get_fighter_html(hr_id, data_dir)
+            name, nat, club = _parse_profile_html(html)
+        except Exception as exc:
+            logger.warning(f"hr_id={hr_id}: enrichment failed — {exc}")
+            continue
+        if name:
+            hr_index[hr_id] = (name, nat, club)
+            fetched += 1
+            logger.debug(f"Enriched hr_id={hr_id}: {name} / {nat} / {club}")
+        else:
+            logger.warning(f"hr_id={hr_id}: could not parse name from profile page")
+    logger.info(f"Enriched hr_index with {fetched} profile(s)")
+
+
 def _normalize(s: str) -> str:
     """Lowercase + strip diacritics for fuzzy comparison."""
     return "".join(
@@ -300,6 +345,9 @@ def match_fencers(
 
     fighters_text = _get_fighters_compact(data_dir)
     hr_index = _build_hr_index(fighters_text)
+
+    confirmed_hr_ids = {f.hr_id for f in fencers if f.hr_id is not None}
+    _enrich_hr_index(confirmed_hr_ids, hr_index, data_dir)
 
     need_llm: list[FencerRecord] = []
     updated_fencers: list[FencerRecord] = []
@@ -555,8 +603,11 @@ def _match_table_chunks(
         is_proxy = (mf.email or "").lower() in proxy_emails
 
         if single_row:
-            # One row per fencer using HR profile values
-            hr_name, hr_nat, hr_club = hr_index.get(final_hr_id, ("", "", "")) if final_hr_id else ("", "", "")
+            # One row per fencer using HR profile values; fall back to registered data if not in index
+            if final_hr_id and final_hr_id in hr_index:
+                hr_name, hr_nat, hr_club = hr_index[final_hr_id]
+            else:
+                hr_name, hr_nat, hr_club = mf.name, mf.nationality or "", mf.club or ""
             row = _row("HR", hr_name, hr_nat, hr_club, str(final_hr_id) if final_hr_id else "—", "Ok")
             pairs.append((row, None, None))
             continue
@@ -570,7 +621,11 @@ def _match_table_chunks(
             # Row 3 — final output after re-matching (may have a new hr_id or none)
             out_hrid = str(final_hr_id) if final_hr_id else "—"
             out_marker = "?" if final_hr_id else ""
-            out = _row("==>", mf.name, mf.nationality or "", mf.club or "", out_hrid, out_marker)
+            if final_hr_id and final_hr_id in hr_index:
+                out_name, out_nat, out_club = hr_index[final_hr_id]
+            else:
+                out_name, out_nat, out_club = mf.name, mf.nationality or "", mf.club or ""
+            out = _row("==>", out_name, out_nat, out_club, out_hrid, out_marker)
             pairs.append((reg, hr, out))
             continue
 
@@ -612,8 +667,10 @@ def _match_table_chunks(
 
     for reg, hr, out in pairs:
         pair_lines = [r for r in (reg, hr, out) if r is not None]
+        multi_row = not single_row and len(pair_lines) > 1
+        sep_cost = (len(SEP) + 1) if multi_row else 0
         # pair cost = rows + trailing separator (replaced by footer for last pair)
-        pair_cost = sum(len(line) + 1 for line in pair_lines) + len(SEP) + 1
+        pair_cost = sum(len(line) + 1 for line in pair_lines) + sep_cost
 
         if body_lines and overhead + body_size + pair_cost > max_chunk:
             # Remove trailing SEP from previous pair, close chunk
@@ -624,7 +681,8 @@ def _match_table_chunks(
             body_size = 0
 
         body_lines.extend(pair_lines)
-        body_lines.append(SEP)
+        if multi_row:
+            body_lines.append(SEP)
         body_size += pair_cost
 
     if body_lines:
