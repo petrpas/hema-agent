@@ -23,38 +23,9 @@ FIGHTERS_CACHE_FILENAME = "hemaratings_fighters.html"
 FIGHTERS_PARSED_FILENAME = "hemaratings_fighters.csv"
 MATCH_CORRECTIONS_FILE = "match_corrections.json"
 
-SYSTEM_PROMPT = """You are a data assistant for HEMA (Historical European Martial Arts) tournaments.
-You will receive:
-1. A list of registered unmatched fencers (email, name, club) that need their HEMA Ratings ID found.
-2. A pre-filtered list of the most likely candidate fighters from hemaratings.com: id;name;nationality;club (one per line).
-   Note: this is NOT the complete HR database — only candidates selected by a pre-filter. If no good match appears,
-   the person may genuinely not be on HEMA Ratings, or the pre-filter may have missed them; set hr_id to null.
+from msgs import read_msg as _read_msg
 
-Your task: For each unmatched fencer, fuzzy-match them against the candidate fighters list using:
-- Name similarity (handle transliterations, nicknames, diacritics: "Honza" ↔ "Jan", "Blažek" ↔ "Blazek")
-- Club name as a secondary signal
-- Nationality as a tertiary signal
-
-Only set hr_id if you are confident (>80%) it is the same person. If no confident match exists, set hr_id to null.
-
-Output fields per fencer:
-- email: echo back unchanged — used to key results back to the registration record
-- hr_id: matched HR id, or null if no confident match
-- matched_name: the canonical name from the HR fighters list (used for caching), or null if unmatched
-- matched_club: the resolved club name (see rules below), or null if unmatched
-- nationality: resolved nationality (see rule below)
-
-Club resolution rules (populate matched_club):
-- If registration club is blank, use the club from HR.
-- If registration club looks like an abbreviation or alternate spelling of the HR club, use the HR club name.
-- If registration club and HR club are clearly different organizations, keep the registration club name.
-
-Examples:
- - HR: Academy of Knight's Arts; Registration: AKA; -> Academy of Knight's Arts  (abbreviation → use HR name)
- - HR: Academy of Knight's Arts; Registration: Duelanti od sv. Rocha; -> Duelanti od sv. Rocha  (different club → keep registration)
-
-Nationality: if provided in the registration, keep it; otherwise take it from HR.
-"""
+SYSTEM_PROMPT = _read_msg("step3_system_prompt")
 
 class FencerMatch(BaseModel):
     email: str
@@ -484,25 +455,12 @@ def _save_matched(fencers: list[FencerRecord], path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 _MATCH_TABLE_LEGEND = {
-    "EN": "_Match: `?` = auto-matched  `??` = auto-matched but email shared with another fencer (check carefully)  `!!` = self-reported ID rejected — HR row shows rejected profile_",
-    "CS": "_Shoda: `?` = automaticky spárováno  `??` = automaticky spárováno, ale e-mail sdílí více závodníků (zkontrolujte)  `!!` = uvedené HRID zamítnuto — řádek HR zobrazuje zamítnutý profil_",
+    lang: _read_msg("match_table_legend", lang) for lang in ("EN", "CS")
 }
 
 _MATCH_TABLE_TEMPLATE = {
-    "CS": {
-        "header":    "## Výsledky párování na HR.",
-        "confirmed": "### Potvrzená shoda\n- šermíři, kteří uvedli HRID a odpovídá záznamu v HR.\n- bude použito shodné HRID a údaje z HR.",
-        "found":     "### Nalezená shoda\n- šermíři, kteří neuvedli HRID, ale podařilo se je dohledat v HR.\n- bude použito nalezené HRID a údaje z HR.",
-        "unmatched": "### Nenalezená shoda\n- šermíři, pro které se nepodařilo najít záznam v HR.\n- záznam zůstane prázdný k ručnímu doplnění",
-        "rejected":  "### Odmítnutá shoda\n- šermíři, kteří uvedli HRID, ale neodpovídá záznamu v HR.\n- záznam zůstane prázdný k ručnímu doplnění",
-    },
-    "EN": {
-        "header":    "## HR matching results.",
-        "confirmed": "### Confirmed match\n- fencers who provided their HR ID and it matched an HR record.\n- their matched HR ID and HR profile data will be used.",
-        "found":     "### Found match\n- fencers who did not provide an HR ID, but one was found in HR.\n- the found HR ID and HR profile data will be used.",
-        "unmatched": "### Unmatched\n- fencers for whom no matching HR record could be found.\n- their record will be left empty for manual completion.",
-        "rejected":  "### Rejected match\n- fencers who provided an HR ID, but it did not match an HR record.\n- their record will be left empty for manual completion.",
-    },
+    lang: {k: _read_msg(f"match_table_{k}", lang) for k in ("header", "confirmed", "found", "unmatched", "rejected")}
+    for lang in ("EN", "CS")
 }
 
 

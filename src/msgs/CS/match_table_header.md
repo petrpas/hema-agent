@@ -1,0 +1,1 @@
+## Výsledky párování na HR.

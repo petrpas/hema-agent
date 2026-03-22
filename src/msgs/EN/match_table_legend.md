@@ -1,0 +1,1 @@
+_Match: `?` = auto-matched  `??` = auto-matched but email shared with another fencer (check carefully)  `!!` = self-reported ID rejected — HR row shows rejected profile_

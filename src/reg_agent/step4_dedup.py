@@ -5,61 +5,17 @@ import logging
 import textwrap
 
 from config.tracing import observe
-from jinja2 import Template
 from pydantic import BaseModel
 from pydantic_ai import Agent, ModelSettings
 
 from config import RegConfig, Step
 from models import FencerRecord
+from msgs import render_msg
 from utils import load_fencers_list, save_fencers_list, FENCERS_DEDUPED_FILE, FENCERS_DEDUPED_FP_FILE
 
 logger = logging.getLogger(__name__)
 
 FENCERS_LIKELY_GROUPS_PENDING_FILE = "fencers_likely_groups_pending.json"
-
-SYSTEM_PROMPT_TEMPLATE = Template("""You are a data assistant for a HEMA tournament.
-You will receive multiple registration records that belong to the same person (same HEMA Ratings ID),
-sorted oldest first by registration_time.
-
-First, check the notes fields for intent. A later record may explicitly say it is a correction
-(e.g. "correction of previous", "I made a mistake earlier", "updated disciplines").
-If so, treat that record's fields as authoritative for the fields it mentions, overriding earlier ones.
-
-Default merge rules (apply when no correction intent is found):
-- name: use the most complete/correctly spelled form
-- registration_time: keep the earliest
-- nationality, email, club, hr_id: prefer non-empty/non-null values
-- disciplines: union of all disciplines across records
-- borrow: union of all borrow requests
-- after_party: if any record says Yes use Yes; if conflicting use Oth
-- notes: concatenate non-empty notes separated by " | ", omit correction meta-comments
-- problems: note any inconsistencies between the records
-
-After merging, write a short `merge_note` (1 sentence, language: {{language}}) explaining
-what was different between the records and what decision was made (e.g. "dup 2 added RA discipline.
-Disciplines were merged." or "dup 2 was a correction — used as authoritative.").
-""")
-
-NO_ID_DUP_SYSTEM_PROMPT_TEMPLATE = Template("""You are a data assistant for a HEMA tournament.
-You will receive a list of fencer registrations that do NOT have a HEMA Ratings ID.
-Your task: identify groups of registrations that likely belong to the same person.
-
-Classify each potential duplicate group into exactly one category:
-
-**surely**: Identical or near-identical name AND at least one matching corroborating field
-(nationality, club, email, or overlapping disciplines). Extremely high confidence — safe to
-auto-merge without asking the organiser.
-
-**likely**: Same or similar name, but fewer corroborating fields. Human confirmation is warranted.
-
-**possible**: Vaguely similar names with no corroborating evidence. Classify here rather than
-"likely" to avoid false positives. These will be silently discarded.
-
-If a pair/group does not fit any category, do not include it.
-Every fencer name may appear in at most one group across all categories.
-Input is a JSON array. Output the three lists of name groups in JSON.
-Language for your internal reasoning: {{language}}
-""")
 
 
 class FencerMergeResult(BaseModel):
@@ -78,7 +34,7 @@ def merge_group(records: list[FencerRecord], config: RegConfig, hint: str | None
         model=config.model(Step.DEDUP),
         model_settings=ModelSettings(temperature=0.0),
         output_type=FencerMergeResult,
-        system_prompt=SYSTEM_PROMPT_TEMPLATE.render(language=config.language),
+        system_prompt=render_msg("step4_system_prompt", {"language": config.language}),
         retries=3,
     )
     sorted_records = sorted(records, key=lambda r: r.registration_time)
@@ -103,7 +59,7 @@ def find_no_id_duplicates_llm(
         model=config.model(Step.DEDUP),
         model_settings=ModelSettings(temperature=0.0),
         output_type=NoIdDuplicateGroups,
-        system_prompt=NO_ID_DUP_SYSTEM_PROMPT_TEMPLATE.render(language=config.language),
+        system_prompt=render_msg("step4_no_id_dup_system_prompt", {"language": config.language}),
         retries=3,
     )
     fencer_data = [

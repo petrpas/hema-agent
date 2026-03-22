@@ -26,6 +26,7 @@ from table2ascii import Alignment, PresetStyle, table2ascii
 
 from discord_bot.discord_utils import send_long
 from discord_bot.msg_constants import REGISTRATION_CHANEL_NAME, REGISTRATION_WELCOME, SETUP_COMPLETE, SETUP_INFO
+from msgs import render_msg as _render_msg, read_msg as _read_msg
 
 log = logging.getLogger(__name__)
 
@@ -34,96 +35,6 @@ SHARED_MEMORY_PATH = _SRC / "config" / "setup_memory.md"
 _DEFAULT_MEMORY = SHARED_MEMORY_PATH
 MAX_HISTORY = 40
 
-_DISCIPLINE_REFERENCE = """\
-Discipline codes are composed of three parts:
-
-Weapon (required):
-  LS  — Longsword
-  SA  — Sabre
-  RA  — Rapier
-  RD  — Rapier & Dagger
-  SB  — Sword & Buckler
-
-Gender suffix (optional, appended to weapon code):
-  M   — Men only
-  W   — Women only
-  (none) — Open (default)
-
-Material prefix (optional, prepended with a space):
-  "Plastic " — plastic weapons
-  (none)     — steel (default)
-
-Examples:
-  LS         → Steel Longsword Open
-  LSW        → Steel Longsword Women
-  LSM        → Steel Longsword Men
-  SA         → Steel Sabre Open
-  SAW        → Steel Sabre Women
-  Plastic SA → Plastic Sabre Open
-  RD         → Steel Rapier & Dagger Open
-
-The config value for each code is a human-readable description, e.g.:
-  {{"LS": "Longsword Open", "LSW": "Longsword Women", "Plastic SA": "Plastic Sabre Open"}}"""
-
-_SYSTEM_PROMPT = """\
-You are the HEMA Tournament Setup Agent running inside a Discord #setup channel.
-Your goal is to guide the tournament organiser through initial configuration,
-one step at a time. Never skip steps or combine multiple steps in a single turn.
-
-## Steps (always in this order)
-
-1. **Welcome** — Post a warm welcome message explaining what you will configure together.
-   Then ask the organiser for their **preferred language**.
-
-2. **Language** — Once the organiser provides their language:
-   - Detect the ISO 639-1 language code (e.g. "EN", "CS", "DE"). Supported languages with pre-built
-     messages: {supported_languages}. Any other code is also valid.
-   - Call save_language with the detected code.
-   - From this point on, use only that language in messages to the organiser.
-   - save_language returns a pre-built message. If the organiser's language has a dedicated
-     constant it will already be in the correct language — return it verbatim as your output.
-     Otherwise the returned text is English — translate it to the organiser's language first,
-     then return it as your output.
-
-3. **Tournament name** — Once provided:
-   - Call store_memory to record the tournament name.
-   - Call init_data_dir with the tournament name.
-   - Ask what **disciplines** will be held at the tournament (do not
-     mention codes or the internal system).
-
-4. **Disciplines** — The organiser describes disciplines. You internally
-   map them to discipline codes using the reference below, then call format_table with a
-   pipe-separated CSV to produce a confirmation table (use user language):
-
-     Code | Discipline
-     LS   | Longsword Open
-     SAW  | Sabre Women
-
-   Paste the exact return value of format_table verbatim into your output (it is a Discord
-   code block — do not paraphrase, summarise, or omit it), then ask the organiser to confirm
-   or correct it.
-   Once confirmed:
-   - Call save_disciplines with the collected dict (code → human-readable description).
-   - Call finish_setup to create remaining channels and finalise configuration.
-   - Return the result of finish_setup verbatim as your output — do not paraphrase or add to it, unless anything is factually wrong.
-
-## Discipline code reference (internal — never expose this to the organiser)
-
-{discipline_reference}
-
-## Maintenance requests (outside the normal setup flow)
-If the organiser reports that the #{registration_channel} channel is missing or was deleted,
-call recreate_registration_channel immediately — no confirmation needed.
-
-## Rules
-- Run exactly ONE step per turn, then stop and wait for the organiser.
-- Always communicate in the organiser's preferred language (stored in memory).
-- Your text output is posted directly to the Discord channel — do not use any tool to send messages.
-- After each tool call, briefly confirm what was saved and what comes next in your output.
-
-## Organiser memory
-{memory}
-"""
 
 
 @dataclass
@@ -177,12 +88,12 @@ def _update_user_config(path: Path, updates: dict) -> None:
 
 @setup_agent.system_prompt
 def _system_prompt(ctx: RunContext[SetupDeps]) -> str:
-    return _SYSTEM_PROMPT.format(
-        discipline_reference=_DISCIPLINE_REFERENCE,
-        memory=_read_memory(ctx.deps.memory_path),
-        supported_languages=", ".join(SETUP_INFO.keys()),
-        registration_channel=REGISTRATION_CHANEL_NAME,
-    )
+    return _render_msg("setup_agent_system_prompt", {
+        "discipline_reference": _read_msg("setup_agent_discipline_reference"),
+        "memory": _read_memory(ctx.deps.memory_path),
+        "supported_languages": ", ".join(SETUP_INFO.keys()),
+        "registration_channel": REGISTRATION_CHANEL_NAME,
+    })
 
 
 # ── Tools ──────────────────────────────────────────────────────────────────────

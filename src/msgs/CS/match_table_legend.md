@@ -1,0 +1,1 @@
+_Shoda: `?` = automaticky spárováno  `??` = automaticky spárováno, ale e-mail sdílí více závodníků (zkontrolujte)  `!!` = uvedené HRID zamítnuto — řádek HR zobrazuje zamítnutý profil_

@@ -7,6 +7,7 @@ Discord channel history is the sole persistent conversation layer.
 
 import asyncio
 import csv
+import re
 import io
 import logging
 import os
@@ -32,7 +33,8 @@ langfuse = get_langfuse_client()
 from config import RegConfig, RegUserConfig, save_config
 from discord_bot.discord_utils import send_long
 from models import FencerRecord
-from discord_bot.msg_constants import SHEET_ACCESS_REQUEST, SHEET_CLONE_REQUEST
+from discord_bot.msg_constants import PAYMENTS_THREAD_INTRO
+from msgs import read_msg as _read_msg, render_msg as _render_msg
 from setup_agent.setup_agent import SHARED_MEMORY_PATH
 from step1_download import download_registrations
 from step2_parse import parse_registrations
@@ -61,13 +63,10 @@ from step4_dedup import (
 from step5_ratings import fetch_ratings
 from step6_upload import upload_results, upload_results_initial, setup_output_sheet
 from step7_payments import (
-    parse_transactions,
+    load_all_parsed,
     match_payments,
     format_payments_report,
-    ParsedTransactionList,
     PaymentsResult,
-    PAYMENTS_RAW_FILE,
-    PAYMENTS_PARSED_FILE,
     PAYMENTS_MATCHED_FILE,
 )
 from utils import (
@@ -95,120 +94,6 @@ _THREAD_NAMES = {
 _PAYMENTS_THREAD_PREFIX = "💰"
 _PAYMENTS_THREAD_NAME = "💰 Payments"
 
-_SYSTEM_PROMPT = """\
-You are the HEMA Tournament Registration Agent running inside a Discord channel.
-You help tournament organisers enrich fencer registration data with HEMA Ratings scores.
-
-## Language
-Use the organiser's preferred language (stored in memory) for all messages to the organiser.
-Internal reasoning, tool call arguments, and all other agent outputs must remain in English.
-
-## Behaviour
-- Never greet or re-introduce yourself — the channel welcome message already does that.
-- Your text output is posted directly to the Discord channel — do not use any tool to send messages.
-- Run **one pipeline step per turn**, then write a short summary as your output and STOP.
-- Never advance to the next step without explicit organiser approval.
-- Approval phrases: "ok", "yes", "proceed", "go", "continue", "looks good", "do it",
-  "next", "start", "run", or equivalent — all count.
-- **No step is mandatory.** If the organiser wants to skip a step, acknowledge and move on.
-- Rejection or correction → ask for clarification in your output; do not advance.
-- Organiser provides a fact to remember → call `store_memory`, then acknowledge in your output.
-- `/status` → describe current pipeline state from history; do not run anything.
-- On any step error → report it in your output and ask the organiser how to proceed.
-- Answer questions if asked; do not advance the pipeline until the organiser resumes.
-- Keep each response brief: one short paragraph (2–4 sentences). Never repeat information or state the same thing twice.
-
-## No internal reveals
-Never expose implementation details to the organiser. This means:
-- Never mention memory, tools, tags, thread indexes, config, or file paths.
-- Never say "I don't have X in memory" — just ask for the information naturally.
-- Never reference tool names or step tags in output visible to the organiser.
-
-## Pipeline steps (run in order, one at a time)
-1. `tool_download_registrations`      — fetch latest registrations from Google Sheet
-2. `tool_parse_registrations`         — parse and normalise fencer data
-3. `tool_match_fencers`               — fuzzy-match fencers to HEMA Ratings profiles
-4. `tool_deduplicate_fencers`         — merge duplicate registrations
-   4a. If it reports likely groups pending: call `tool_find_likely_duplicates` immediately.
-       Tell the organiser to ✅ groups in the thread (and reply with instructions if needed).
-       Do NOT proceed to step 5 — wait for the next /run.
-   4b. If the thread already has `#dedup-likely-*` messages from a prior turn:
-       call `tool_merge_confirmed_duplicates` before `tool_fetch_ratings`.
-5. `tool_fetch_ratings`               — fetch current ratings from hemaratings.com
-6. `tool_upload_results`              — write enriched data to the output Google Sheet
-   After an initial upload (fresh sheet), the bot posts a clone request to the channel.
-   When the organiser replies with a link to their own copy, call `tool_set_output_sheet`
-   to update the URL. Do NOT advance to step 7 until the organiser has provided their copy link
-   or explicitly said they do not want to clone the sheet.
-7. `tool_process_payments`            — parse bank export and match payments to fencers
-   The bank export arrives as a file attachment (bot reads it automatically).
-   If the organiser asks to process payments but has NOT attached a file, reply:
-     "Připoj prosím výpis z účtu jako přílohu zprávy (textový soubor nebo CSV)."  [CS]
-     "Please attach the bank export as a file (text or CSV) to your message."     [EN]
-   Do NOT ask them to paste text inline — always wait for an attachment.
-   If a file was already uploaded in a prior run, call tool_process_payments()
-   without raw_content to re-use the saved file.
-   After organiser approval: call `tool_write_payments` to write Paid column in the Fencers sheet.
-   Organiser can re-run with hints: call `tool_process_payments(hints=…)` without raw_content.
-8. Group seeding                      — **not yet implemented**; mention this to the organiser and skip
-
-After each step, write a short natural-language summary and ask for approval before proceeding.
-
-Each completed step posts a `✅ N — summary` message to the channel. These are the
-authoritative pipeline state — use them to determine what has run when answering `/status`
-or handling out-of-order events like CSV uploads.
-
-## Registration sheet
-The organiser can provide registration data in two ways:
-- **Google Sheet** — share a sheet URL (standard flow below)
-- **Direct CSV upload** — if you receive a `[system: organiser uploaded a CSV file …]`,
-  check channel history for `✅ N` markers to determine pipeline state:
-  - No `✅` markers yet: treat it as step 1 complete, confirm the upload and ask whether to proceed to parsing.
-  - Steps already completed: ask the organiser whether this replaces the current data (restart from step 2) or is something else.
-
-The registration Google Sheet URL is not stored in config — it comes from the organiser.
-Before calling `tool_download_registrations`:
-1. Check organiser memory for a line containing the registration sheet URL.
-2. If not found, output the following message verbatim (it is already in the organiser's language):
-
-{sheet_access_request}
-
-   Then call `store_memory` with the URL they provide.
-3. Call `check_access` with the URL.
-   - If it returns `ok` and access was not already confirmed in memory,
-     call `store_memory("registration sheet access verified")`.
-   - If it returns an error, tell the organiser the bot cannot open the sheet and ask them
-     to check the sharing settings. Do not proceed.
-
-## Pipeline thread
-The thread is created during step 1 and mentioned in the step 1 summary — include that mention
-verbatim in your output so the organiser knows where to follow along.
-Each step automatically posts its full tabulated output to the thread (side effect —
-not visible in this context). The tag returned in each step summary can be used to retrieve
-that data if the organiser raises an objection:
-- Call `read_thread_message(tag)` to fetch the most recent data for that step.
-- Only the **current run's thread** is accessible. If the organiser asks about data from a
-  previous run, explain that it is not available here and they should consult the thread directly.
-
-## Weapon / discipline codes
-Weapons: LS = Long Sword, SA = Sabre, RA = Rapier, RD = Rapier & Dagger, SB = Sword & Buckler
-Gender suffix: no suffix = Open by default, O = explicitly Open, W = Women, M = Men (e.g. LS = Long Sword open, LSO = Long Sword Open, LSW = Long Sword Women, LSM = Long Sword Men — rare, most men's categories run as Open)
-
-## Correcting a match (step 3)
-If the organiser reports a wrong match after step 3:
-- Wrong hr_id or no profile: call tool_correct_match immediately.
-  This fixes the current run and persists the correction for all future reruns.
-- General matching guidance (nationality rules, proxy patterns, etc.):
-  call store_memory with the text prefixed by "[match-hint]".
-  These hints are automatically passed to the matcher on every rerun.
-Do NOT re-run step 3 to apply a correction — tool_correct_match patches the data in place.
-
-## Tournament
-{tournament_name}
-
-## Organiser memory
-{memory}
-"""
 
 
 @dataclass
@@ -235,13 +120,12 @@ registration_agent = Agent(
 def _system_prompt(ctx: RunContext[AgentDeps]) -> str:
     lang = ctx.deps.config.language
     bot_email = _bot_email(ctx.deps.config)
-    sheet_request_template = SHEET_ACCESS_REQUEST.get(lang, SHEET_ACCESS_REQUEST["EN"])
-    return _SYSTEM_PROMPT.format(
-        tournament_name=ctx.deps.config.tournament_name,
-        bot_email=bot_email,
-        sheet_access_request=sheet_request_template.format(bot_email=bot_email),
-        memory=_read_memory(),
-    )
+    sheet_access = _render_msg("sheet_access_request", {"bot_email": bot_email}, lang)
+    return _render_msg("reg_agent_system_prompt", {
+        "tournament_name": ctx.deps.config.tournament_name,
+        "sheet_access_request": sheet_access,
+        "memory": _read_memory(),
+    })
 
 
 # ── Creds helpers ──────────────────────────────────────────────────────────────
@@ -292,14 +176,17 @@ async def _find_payments_thread(channel: discord.TextChannel) -> discord.Thread 
     return None
 
 
-async def _create_payments_thread(channel: discord.TextChannel) -> discord.Thread | None:
-    """Create the payments thread with an anchor message."""
+async def _create_payments_thread(channel: discord.TextChannel, lang: str = "EN") -> discord.Thread | None:
+    """Create the payments thread and post the intro message."""
     try:
+        intro = PAYMENTS_THREAD_INTRO.get(lang, PAYMENTS_THREAD_INTRO["EN"])
         anchor = await channel.send(_PAYMENTS_THREAD_NAME)
-        return await anchor.create_thread(
+        thread = await anchor.create_thread(
             name=_PAYMENTS_THREAD_NAME,
             auto_archive_duration=1440,
         )
+        await thread.send(intro)
+        return thread
     except Exception:
         log.exception("Failed to create payments thread")
         return None
@@ -979,9 +866,11 @@ async def tool_upload_results(ctx: RunContext[AgentDeps], force_recreate: bool =
 
     if sheet_just_created:
         lang = ctx.deps.config.language
-        tmpl = SHEET_CLONE_REQUEST.get(lang, SHEET_CLONE_REQUEST["EN"])
         bot_email = _bot_email(ctx.deps.config)
-        await ctx.deps.channel.send(tmpl.format(url=ctx.deps.config.output_sheet_url, bot_email=bot_email))
+        await ctx.deps.channel.send(
+            _render_msg("sheet_clone_request",
+                        {"url": ctx.deps.config.output_sheet_url, "bot_email": bot_email}, lang)
+        )
         return (
             f"Upload complete. Output sheet: {ctx.deps.config.output_sheet_url}. "
             f"Waiting for the organiser to clone the sheet and share their copy."
@@ -1020,26 +909,40 @@ async def tool_set_output_sheet(ctx: RunContext[AgentDeps], url: str) -> str:
 
 
 @registration_agent.tool
+async def tool_open_payments_thread(ctx: RunContext[AgentDeps]) -> str:
+    """Step 7a: Ensure the 💰 Payments thread exists and return a Discord mention link.
+
+    Call this first when entering step 7 so the organiser has a clickable link to the thread
+    where they should upload their bank export files.
+    """
+    channel = ctx.deps.channel
+    lang = ctx.deps.config.language
+    thread = await _find_payments_thread(channel)
+    if thread is None:
+        thread = await _create_payments_thread(channel, lang)
+    if thread is None:
+        return "Could not create the 💰 Payments thread — check bot permissions."
+    return f"<#{thread.id}>"
+
+
+@registration_agent.tool
 async def tool_process_payments(
     ctx: RunContext[AgentDeps],
-    raw_content: str | None = None,
     hints: str | None = None,
 ) -> str:
-    """Step 7: Parse bank export and match payments to fencers.
+    """Step 7b: Aggregate all parsed payment files and match to fencers.
 
-    raw_content: raw bank statement text. Required on first call; omit to re-use the saved file.
     hints: optional organiser corrections injected into the matcher (e.g. "line 12 is David Brown").
+    Files must already be uploaded to the 💰 Payments thread and auto-parsed before calling this.
     """
     data_dir = ctx.deps.config.data_dir
-    raw_path = data_dir / PAYMENTS_RAW_FILE
 
-    if raw_content:
-        raw_path.parent.mkdir(parents=True, exist_ok=True)
-        raw_path.write_text(raw_content)
-    elif raw_path.exists():
-        raw_content = raw_path.read_text()
-    else:
-        return "No payment file found — please attach a bank statement file."
+    transactions = load_all_parsed(data_dir)
+    if not transactions:
+        return (
+            "No parsed payment files found. "
+            "Ask the organiser to upload bank export files in the 💰 Payments thread."
+        )
 
     fencers = load_fencers_list(data_dir, FENCERS_DEDUPED_FILE)
     if fencers is None:
@@ -1048,6 +951,7 @@ async def tool_process_payments(
     fencer_summaries = [
         {
             "name": f.name,
+            "club": f.club or "unknown",
             "disciplines": ", ".join(d.str() for d in f.disciplines),
             "afterparty": f.after_party or "unknown",
             "borrow": ", ".join(str(w) for w in f.borrow) if f.borrow else "none",
@@ -1055,30 +959,31 @@ async def tool_process_payments(
         for f in fencers
     ]
 
-    try:
-        transactions = await asyncio.to_thread(
-            parse_transactions, raw_content, ctx.deps.config
-        )
-    except Exception as e:
-        return f"error parsing transactions: {e}"
-
-    (data_dir / PAYMENTS_PARSED_FILE).write_text(
-        ParsedTransactionList(transactions=transactions).model_dump_json(indent=2)
-    )
+    # Combine persistent [payment-hint] lines from memory with any ad-hoc hints argument
+    memory_hints = [
+        line[line.index("[payment-hint]") + len("[payment-hint]"):].strip()
+        for line in _read_memory().splitlines()
+        if "[payment-hint]" in line
+    ]
+    combined_hints = "\n".join(filter(None, memory_hints + ([hints] if hints else []))) or None
 
     try:
         result = await asyncio.to_thread(
-            match_payments, transactions, fencer_summaries, hints, ctx.deps.config
+            match_payments, transactions, fencer_summaries, combined_hints, ctx.deps.config
         )
     except Exception as e:
         return f"error matching payments: {e}"
 
     (data_dir / PAYMENTS_MATCHED_FILE).write_text(result.model_dump_json(indent=2))
 
-    report = format_payments_report(result)
+    fencer_disciplines = {
+        f.name: ", ".join(d.str() for d in f.disciplines)
+        for f in fencers
+    }
+    report = format_payments_report(result, fencer_disciplines)
     thread = await _find_payments_thread(ctx.deps.channel)
     if thread is None:
-        thread = await _create_payments_thread(ctx.deps.channel)
+        thread = await _create_payments_thread(ctx.deps.channel, ctx.deps.config.language)
     if thread is not None:
         await send_long(thread, report)
 
@@ -1087,6 +992,16 @@ async def tool_process_payments(
         f"{len(result.matched)} matched, {len(result.possible)} possible, "
         f"{len(result.unmatched_payments)} unmatched payments."
     )
+
+
+def _parse_amount(amount_str: str) -> float:
+    """Strip currency and convert to float. Handles both European (600,05) and English (600.05) formats."""
+    digits = re.sub(r"[^\d.,]", "", amount_str)
+    if "," in digits and "." in digits:
+        digits = digits.replace(",", "")   # comma = thousands separator
+    else:
+        digits = digits.replace(",", ".")  # comma = decimal separator (Czech/European)
+    return float(digits)
 
 
 @registration_agent.tool
@@ -1130,7 +1045,7 @@ async def tool_write_payments(ctx: RunContext[AgentDeps]) -> str:
     written: list[str] = []
     not_found: list[str] = []
 
-    updates: list[tuple[str, str]] = []  # (A1 cell, amount)
+    updates: list[tuple[str, float]] = []  # (A1 cell, numeric amount)
     for match in hi_matches:
         for fname in match.fencer_names:
             row_idx = name_to_row.get(fname.strip().lower())
@@ -1138,7 +1053,7 @@ async def tool_write_payments(ctx: RunContext[AgentDeps]) -> str:
                 not_found.append(fname)
                 continue
             cell = gspread.utils.rowcol_to_a1(row_idx, 7)  # col 7 = Paid
-            updates.append((cell, match.amount))
+            updates.append((cell, _parse_amount(match.amount)))
             written.append(fname)
 
     try:
@@ -1149,7 +1064,7 @@ async def tool_write_payments(ctx: RunContext[AgentDeps]) -> str:
 
     thread = await _find_payments_thread(ctx.deps.channel)
     if thread is None:
-        thread = await _create_payments_thread(ctx.deps.channel)
+        thread = await _create_payments_thread(ctx.deps.channel, ctx.deps.config.language)
     if thread is not None:
         skip_count = len(result.possible)
         msg = (
@@ -1195,8 +1110,10 @@ async def run_agent(
     channel: discord.TextChannel,
     new_message_content: str,
     config: RegConfig,
+    response_channel: discord.abc.Messageable | None = None,
 ) -> None:
     """Run one agent turn: read channel history, decide next action, post response."""
+    reply_to: discord.abc.Messageable = response_channel or channel
     thread = await _find_latest_thread(channel)
     thread_index = await _scan_thread(thread) if thread else {}
     deps = AgentDeps(channel=channel, thread=thread, thread_index=thread_index, config=config)
@@ -1209,7 +1126,7 @@ async def run_agent(
                  len(output_str), len(result.all_messages()), output_str[:300])
         # If the agent replied with plain text instead of calling inform(), post it.
         if output_str.strip():
-            await send_long(channel, output_str)
+            await send_long(reply_to, output_str)
     except Exception:
         log.exception("Agent run failed")
-        await channel.send("⚠ Internal error — check logs.")
+        await reply_to.send("⚠ Internal error — check logs.")
