@@ -1,4 +1,0 @@
-- [2026-03-15 00:03 UTC] registration sheet URL: https://docs.google.com/spreadsheets/d/1_Bdvbdexkt4lo2fduL2gF6peeWkxdgC4Jlxu2px0kO8/edit?usp=sharing
-- [2026-03-15 00:03 UTC] registration sheet access verified
-- [2026-03-15 17:49 UTC] Duelanti club members get 50% discount on entry fee.
-- [2026-03-15 18:39 UTC] [payment-hint] Martin Vrabel zaplatil 900 v hotovosti (keši).

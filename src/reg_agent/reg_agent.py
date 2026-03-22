@@ -27,6 +27,7 @@ for _p in (_SRC, _DIR):
 import discord
 from config.tracing import get_langfuse_client, observe
 from pydantic_ai import Agent, RunContext
+from pydantic_ai.exceptions import ModelHTTPError
 
 langfuse = get_langfuse_client()
 
@@ -800,7 +801,7 @@ async def tool_fetch_ratings(ctx: RunContext[AgentDeps]) -> str:
     if err := _once_per_turn(ctx.deps, "tool_fetch_ratings"):
         return err
     try:
-        ratings = await asyncio.to_thread(fetch_ratings, fencers, ctx.deps.config)
+        ratings, not_found = await asyncio.to_thread(fetch_ratings, fencers, ctx.deps.config)
     except Exception as e:
         return f"error: {e}"
     rated = len(ratings)
@@ -813,7 +814,18 @@ async def tool_fetch_ratings(ctx: RunContext[AgentDeps]) -> str:
     ]
     await _post_csv_to_thread(ctx.deps, "step5-ratings", f"✅ 5 — ratings fetched for {rated}/{total_with_id} fencers",
                               ["HR ID", "Weapon", "Rating", "Rank"], rows, "step5_ratings.csv")
-    return f"Fetched ratings for {rated}/{total_with_id} fencers with hr_id. Thread tag: step5-ratings"
+
+    result = f"Fetched ratings for {rated}/{total_with_id} fencers with hr_id. Thread tag: step5-ratings"
+    if not_found:
+        id_to_name = {f.hr_id: f.name for f in fencers if f.hr_id is not None}
+        not_found_desc = ", ".join(
+            f"{id_to_name.get(hr_id, '?')} (hr_id={hr_id})" for hr_id in sorted(not_found)
+        )
+        result += (
+            f" WARNING: {len(not_found)} profile(s) returned HTTP 404 and were skipped (rank=9999): {not_found_desc}. "
+            f"The hr_id is likely wrong — call tool_correct_match to fix it."
+        )
+    return result
 
 
 @registration_agent.tool
@@ -1127,6 +1139,12 @@ async def run_agent(
         # If the agent replied with plain text instead of calling inform(), post it.
         if output_str.strip():
             await send_long(reply_to, output_str)
+    except ModelHTTPError as e:
+        log.exception("Agent run failed")
+        if e.status_code == 529:
+            await reply_to.send("⚠ Anthropic API is overloaded — please try again in a moment.")
+        else:
+            await reply_to.send(f"⚠ Anthropic API error ({e.status_code}) — check logs.")
     except Exception:
         log.exception("Agent run failed")
         await reply_to.send("⚠ Internal error — check logs.")

@@ -108,6 +108,18 @@ If the organiser reports a wrong match after step 3:
   These hints are automatically passed to the matcher on every rerun.
 Do NOT re-run step 3 to apply a correction — tool_correct_match patches the data in place.
 
+### Finding the exact registered name
+tool_correct_match requires the fencer's name exactly as it appears in the registration data.
+**Never ask the organiser for this** — look it up yourself:
+- Call read_thread_message("step3-match") or read_thread_message("step2-parse") to get the fencer list CSV.
+- Search that CSV for the name (fuzzy: ignore diacritics, double letters, etc.).
+- Use the exact string from the CSV as fencer_name.
+
+### HEMA Ratings URL
+If the organiser shares a URL like `https://hemaratings.com/fighters/details/16059/`, extract the
+hr_id (16059) from it — no further questions needed. Look up the fencer name from the thread data,
+then call tool_correct_match(fencer_name=<name from CSV>, correct_hr_id=16059) immediately.
+
 ## Payment hints (step 7)
 If the organiser provides standing rules that affect payment matching (e.g. "club X has 50% discount",
 "line 7 is Kamil Hozák", "fee for SA is 600 CZK"):

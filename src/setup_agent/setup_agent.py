@@ -63,6 +63,14 @@ def _read_memory(path: Path) -> str:
     return path.read_text().strip() if path.exists() else "(empty)"
 
 
+def _memory_language(path: Path) -> str:
+    """Extract the saved language code from memory, defaulting to EN."""
+    import re
+    memory = _read_memory(path)
+    m = re.search(r"Preferred language:\s*([A-Z]{2,5})", memory)
+    return m.group(1) if m else "EN"
+
+
 def _append_memory(path: Path, fact: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     ts = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
@@ -90,6 +98,7 @@ def _update_user_config(path: Path, updates: dict) -> None:
 def _system_prompt(ctx: RunContext[SetupDeps]) -> str:
     return _render_msg("setup_agent_system_prompt", {
         "discipline_reference": _read_msg("setup_agent_discipline_reference"),
+        "discipline_table": _read_msg("setup_discipline_table", _memory_language(ctx.deps.memory_path)),
         "memory": _read_memory(ctx.deps.memory_path),
         "supported_languages": ", ".join(SETUP_INFO.keys()),
         "registration_channel": REGISTRATION_CHANEL_NAME,

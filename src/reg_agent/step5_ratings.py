@@ -11,6 +11,7 @@ from pathlib import Path
 from collections.abc import Callable
 
 import requests
+from requests import HTTPError
 from config.tracing import observe
 from pydantic import BaseModel
 from pydantic_ai import Agent, ModelSettings
@@ -108,8 +109,11 @@ def _get_fighter_html(hr_id: int, data_dir: Path) -> str:
 
 
 @observe(capture_input=False, capture_output=False)
-def fetch_ratings(fencers: list[FencerRecord], config: RegConfig) -> dict[int, dict[str, FencerRating]]:
-    """Fetch HEMA Ratings data for all fencers with a known hr_id."""
+def fetch_ratings(fencers: list[FencerRecord], config: RegConfig) -> tuple[dict[int, dict[str, FencerRating]], set[int]]:
+    """Fetch HEMA Ratings data for all fencers with a known hr_id.
+
+    Returns (ratings, not_found) where not_found contains hr_ids that returned HTTP 404.
+    """
     data_dir = config.data_dir
     data_dir.mkdir(parents=True, exist_ok=True)
 
@@ -118,11 +122,12 @@ def fetch_ratings(fencers: list[FencerRecord], config: RegConfig) -> dict[int, d
     cached = load_ratings(data_dir, cache_filename)
     if cached is not None:
         logger.info(f"Loaded cached ratings from {cache_filename}")
-        return cached
+        return cached, set()
     cache_path = data_dir / cache_filename
 
     hr_ids = {f.hr_id for f in fencers if f.hr_id is not None}
     results: dict[int, dict[str, FencerRating]] = {}
+    not_found: set[int] = set()
 
     active_discipline_codes = set(config.disciplines.keys())
 
@@ -134,7 +139,15 @@ def fetch_ratings(fencers: list[FencerRecord], config: RegConfig) -> dict[int, d
     logger.info(f"Fetching ratings for {len(hr_ids)} fighters ...")
 
     for hr_id in sorted(hr_ids):
-        html = _get_fighter_html(hr_id, data_dir)
+        try:
+            html = _get_fighter_html(hr_id, data_dir)
+        except HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                logger.warning(f"hr_id={hr_id}: 404 — profile not found, skipping (rank=9999)")
+                results[hr_id] = {}
+                not_found.add(hr_id)
+                continue
+            raise
         max_retries = 3
 
         for attempt in range(max_retries):
@@ -159,4 +172,4 @@ def fetch_ratings(fencers: list[FencerRecord], config: RegConfig) -> dict[int, d
                 )
 
     save_ratings(results, cache_path)
-    return results
+    return results, not_found

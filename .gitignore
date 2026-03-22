@@ -209,6 +209,7 @@ __marimo__/
 # reg-agent runtime data and secrets
 data/
 src/config/user_config.json
+src/config/*_memory.md
 creds.json
 deploy/*.conf
 

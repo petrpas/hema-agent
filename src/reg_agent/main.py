@@ -65,7 +65,9 @@ def main() -> None:
     fencers = parse_registrations(csv_path, config)
     fencers = match_fencers(fencers, config)
     fencers = deduplicate_fencers(fencers, config)
-    ratings = fetch_ratings(fencers, config)
+    ratings, not_found = fetch_ratings(fencers, config)
+    if not_found:
+        logger.warning(f"404 profiles (skipped): {sorted(not_found)}")
     upload_results(fencers, ratings, config)
 
     logger.info(f"=== done ({time.perf_counter() - t0:.1f}s) ===")

@@ -39,6 +39,12 @@ one step at a time. Never skip steps or combine multiple steps in a single turn.
    - Call finish_setup to create remaining channels and finalise configuration.
    - Return the result of finish_setup verbatim as your output — do not paraphrase or add to it, unless anything is factually wrong.
 
+## Discipline list (on request)
+If the organiser asks what disciplines are available, what codes exist, or for a list of options,
+output the following table verbatim (it is already a Discord code block — do not modify it):
+
+{{ discipline_table }}
+
 ## Discipline code reference (internal — never expose this to the organiser)
 
 {{ discipline_reference }}
