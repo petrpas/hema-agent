@@ -473,6 +473,7 @@ async def tool_match_fencers(ctx: RunContext[AgentDeps]) -> str:
                 for chunk in _match_table_chunks(
                     parsed_fencers, groups[section], hr_index,
                     proxy_emails=proxy_emails,
+                    single_row=(section == "confirmed"),
                 ):
                     await thread.send(chunk)
                 if i < len(non_empty) - 1:

@@ -484,14 +484,18 @@ def _match_table_chunks(
     language: str = "EN",
     max_chunk: int = 1950,
     proxy_emails: set[str] | None = None,
+    single_row: bool = False,
 ) -> list[str]:
     """Build step-3 matching table as a list of code-block strings.
 
     Layout: Src | Name | Nat | Club | HRID | Match — fixed 108 chars wide.
-    Each matched fencer occupies two rows (Reg + HR), unmatched one row.
+    Each matched fencer normally occupies two rows (Reg + HR), unmatched one row.
     Pairs are never split across chunks.
 
-    Match column: empty = self-reported accepted, ? = auto-matched, !! = self-reported rejected.
+    When single_row=True each fencer is rendered as one row using HR values only
+    (Src="HR", Match="Ok"). Used for the confirmed section.
+
+    Match column: Ok = confirmed, ? = auto-matched, ?? = auto-matched proxy, !! = rejected.
     For rejected fencers the HR row shows the (wrong) rejected profile.
     """
     W_SRC, W_NAME, W_NAT, W_CLUB, W_HRID, W_MATCH = 3, 25, 3, 40, 5, 5
@@ -540,8 +544,8 @@ def _match_table_chunks(
                 email_names[f.email.lower()].add(f.name.lower())
         proxy_emails = {e for e, names in email_names.items() if len(names) > 1}
 
-    # Each pair: (reg_row_str, hr_row_str | None)
-    pairs: list[tuple[str, str | None]] = []
+    # Each entry: (row1, row2 | None, row3 | None)
+    pairs: list[tuple[str, str | None, str | None]] = []
 
     for mf in matched_fencers:
         pf = parsed_by_name.get(_normalize(mf.name), mf)
@@ -550,13 +554,29 @@ def _match_table_chunks(
         rejected = orig_hr_id is not None and "rejected" in (mf.problems or "")
         is_proxy = (mf.email or "").lower() in proxy_emails
 
+        if single_row:
+            # One row per fencer using HR profile values
+            hr_name, hr_nat, hr_club = hr_index.get(final_hr_id, ("", "", "")) if final_hr_id else ("", "", "")
+            row = _row("HR", hr_name, hr_nat, hr_club, str(final_hr_id) if final_hr_id else "—", "Ok")
+            pairs.append((row, None, None))
+            continue
+
         if rejected:
-            hrid_str = str(orig_hr_id)
-            match_marker = "!!"
-            lookup_id = orig_hr_id   # show the rejected profile in HR row
-        elif final_hr_id is not None:
+            # Row 1 — registration as submitted, with rejected hr_id and !! marker
+            reg = _row("Reg", pf.name, pf.nationality or "", pf.club or "", str(orig_hr_id), "!!")
+            # Row 2 — the rejected HR profile
+            rej_name, rej_nat, rej_club = hr_index.get(orig_hr_id, ("", "", ""))
+            hr = _row(" HR", rej_name, rej_nat, rej_club, "", "")
+            # Row 3 — final output after re-matching (may have a new hr_id or none)
+            out_hrid = str(final_hr_id) if final_hr_id else "—"
+            out_marker = "?" if final_hr_id else ""
+            out = _row("==>", mf.name, mf.nationality or "", mf.club or "", out_hrid, out_marker)
+            pairs.append((reg, hr, out))
+            continue
+
+        if final_hr_id is not None:
             if orig_hr_id is not None and final_hr_id == orig_hr_id:
-                match_marker = ""       # self-reported, accepted
+                match_marker = ""       # self-reported, accepted (shouldn't reach here — goes to confirmed)
             elif is_proxy:
                 match_marker = "??"    # auto-matched but email is shared — proxy suspect
             else:
@@ -576,7 +596,7 @@ def _match_table_chunks(
         else:
             hr = None
 
-        pairs.append((reg, hr))
+        pairs.append((reg, hr, None))
 
     if not pairs:
         return ["(no fencers)"]
@@ -590,8 +610,8 @@ def _match_table_chunks(
     body_lines: list[str] = []
     body_size = 0
 
-    for reg, hr in pairs:
-        pair_lines = [reg, hr] if hr is not None else [reg]
+    for reg, hr, out in pairs:
+        pair_lines = [r for r in (reg, hr, out) if r is not None]
         # pair cost = rows + trailing separator (replaced by footer for last pair)
         pair_cost = sum(len(line) + 1 for line in pair_lines) + len(SEP) + 1
 
