@@ -3,25 +3,25 @@ from html import escape, unescape
 
 
 # Maps substrings in hemaratings weapon-group headers → our codes (longest match first)
-DISCIPLINE_KEYWORDS: list[tuple[str, str]] = [
-    ("Mixed & Men's Steel Longsword", "LS"),
-    ("Women's Steel Longsword", "LSW"),
-    ("Mixed & Men's Steel Sabre", "SA"),
-    ("Women's Steel Sabre", "SAW"),
-    ("Mixed & Men's Steel Sword and Buckler", "SB"),
-    ("Women's Men's Steel Sword and Buckler", "SBW"),
-    ("Mixed & Men's Steel Rapier & Dagger", "RD"),
-    ("Women's Steel Rapier & Dagger", "RDW"),
-    ("Mixed & Men's Steel Single Rapier", "RA"),
-    ("Women's Steel Single Rapier", "RAW"),
+DISCIPLINE_KEYWORDS: list[tuple[str, list[str]]] = [
+    ("Mixed & Men's Steel Longsword", ["LS", "LSM"]),
+    ("Women's Steel Longsword", ["LSW"]),
+    ("Mixed & Men's Steel Sabre", ["SA", "SAM"]),
+    ("Women's Steel Sabre", ["SAW"]),
+    ("Mixed & Men's Steel Sword and Buckler", ["SB", "SBM"]),
+    ("Women's Men's Steel Sword and Buckler", ["SBW"]),
+    ("Mixed & Men's Steel Rapier & Dagger", ["RD", "RDM"]),
+    ("Women's Steel Rapier & Dagger", ["RDW"]),
+    ("Mixed & Men's Steel Single Rapier", ["RA", "RAM"]),
+    ("Women's Steel Single Rapier", ["RAW"]),
 ]
 
-def _discipline_code(header: str) -> str | None:
+def _discipline_codes(header: str) -> list[str]:
     h = header.lower()
-    for keyword, code in DISCIPLINE_KEYWORDS:
-        if keyword in h:
-            return code
-    return None
+    for keyword, codes in DISCIPLINE_KEYWORDS:
+        if keyword.lower() in h:
+            return codes
+    return []
 
 def parse_ratings(html: str, hr_id: int) -> dict[str, tuple[float | None, int | None]]:
     """Parse fighter page HTML with pure regex. Returns {discipline_code: (rating, rank)}.
@@ -47,10 +47,10 @@ def parse_ratings(html: str, hr_id: int) -> dict[str, tuple[float | None, int | 
 
         unescaped = unescape(row)
 
-        for discipline in DISCIPLINE_KEYWORDS:
-            escaped = escape(discipline[0])
+        for keyword, codes in DISCIPLINE_KEYWORDS:
+            escaped = escape(keyword)
 
-            if re.search(discipline[0], row, re.DOTALL) or re.search(escaped, row, re.DOTALL) or re.search(discipline[0], unescaped, re.DOTALL):
+            if re.search(keyword, row, re.DOTALL) or re.search(escaped, row, re.DOTALL) or re.search(keyword, unescaped, re.DOTALL):
                 cells = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL)
                 cells_text = [re.sub(r'<[^>]+>', '', c).strip() for c in cells]
                 # cells_text: [category_name, rank_current, rating_current, ...]
@@ -61,6 +61,7 @@ def parse_ratings(html: str, hr_id: int) -> dict[str, tuple[float | None, int | 
                         rating = float(cells_text[2])
                     except ValueError:
                         rating = None
-                    result[discipline[1]] = (rating, rank)
+                    for code in codes:
+                        result[code] = (rating, rank)
 
     return result

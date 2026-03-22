@@ -330,6 +330,23 @@ def check_access(ctx: RunContext[AgentDeps], sheet_url: str) -> str:
 
 
 @registration_agent.tool
+def list_worksheets(ctx: RunContext[AgentDeps], sheet_url: str) -> str:
+    """List all worksheet (tab) names in a Google Sheet.
+
+    Use this before tool_download_registrations when the worksheet name is not known,
+    so you can pick the correct tab without guessing.
+    """
+    import gspread
+    try:
+        gc = gspread.service_account(filename=ctx.deps.config.creds_path)
+        sh = gc.open_by_url(sheet_url)
+        names = [ws.title for ws in sh.worksheets()]
+        return ", ".join(names)
+    except Exception as e:
+        return f"error: {e}"
+
+
+@registration_agent.tool
 async def tool_download_registrations(
     ctx: RunContext[AgentDeps],
     sheet_url: str,
@@ -339,6 +356,7 @@ async def tool_download_registrations(
     """Step 1: Download the latest registrations from the Google Sheet.
 
     Specify either worksheet_index (0-based, default 0) or worksheet_name — not both.
+    If the worksheet name is unknown, call list_worksheets first rather than guessing.
     """
     if err := _once_per_turn(ctx.deps, "tool_download_registrations"):
         return err
@@ -476,8 +494,6 @@ async def tool_match_fencers(ctx: RunContext[AgentDeps]) -> str:
                     single_row=(section == "confirmed"),
                 ):
                     await thread.send(chunk)
-                if i < len(non_empty) - 1:
-                    await thread.send("---")
     except Exception:
         log.exception("Failed to post step3 match table to thread")
 
@@ -856,6 +872,7 @@ async def tool_upload_results(ctx: RunContext[AgentDeps], force_recreate: bool =
         try:
             url = await asyncio.to_thread(setup_output_sheet, ctx.deps.config)
         except Exception as e:
+            logger.error("setup_output_sheet failed: %s", e, exc_info=True)
             return f"error setting up output sheet: {e}"
         ctx.deps.config.output_sheet_url = url
         user_config_path = os.environ.get("USER_CONFIG")
@@ -874,6 +891,7 @@ async def tool_upload_results(ctx: RunContext[AgentDeps], force_recreate: bool =
     try:
         await asyncio.to_thread(upload_fn, fencers, ratings, ctx.deps.config)
     except Exception as e:
+        logger.error("upload_results failed: %s", e, exc_info=True)
         return f"error: {e}"
     await _post_to_thread(ctx.deps, "step6-upload", "✅ 6 — upload complete")
 

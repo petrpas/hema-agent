@@ -29,7 +29,8 @@ class HemaDiscipline(BaseModel):
 
     def str(self):
         mat = self.material if self.material and self.material != HemaMaterial.Steel else ""
-        return (mat + " " if mat else "") + self.weapon + (self.gender if self.gender == HemaGender.Woman else "")
+        gender = self.gender if self.gender in (HemaGender.Man, HemaGender.Woman) else ""
+        return (mat + " " if mat else "") + self.weapon + gender
 
 
 class FencerRating(BaseModel):
