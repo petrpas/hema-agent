@@ -210,3 +210,5 @@ __marimo__/
 data/
 src/config/user_config.json
 creds.json
+deploy/*.conf
+

@@ -1,0 +1,12 @@
+.venv/
+.git/
+.idea/
+.ruff_cache/
+data/
+discord.log
+tmp.txt
+src/creds.json
+src/config/user_config.json
+**/__pycache__/
+**/*.pyc
+.env

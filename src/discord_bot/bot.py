@@ -5,6 +5,7 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+import asyncio
 import fcntl
 import logging
 import os
@@ -23,8 +24,9 @@ from discord import app_commands
 from discord.ext import commands
 
 
-from reg_agent.reg_agent import run_agent
+from reg_agent.reg_agent import run_agent, _PAYMENTS_THREAD_PREFIX
 from reg_agent.step1_download import save_registration_csv
+from reg_agent.step7_payments import parse_and_store, load_all_parsed
 from setup_agent.setup_agent import run_setup_agent
 from config import load_config, RegConfig
 
@@ -59,8 +61,6 @@ class HemaTournamentBot(commands.Bot):
         await self.add_cog(GeneralCog(self))
         await self.add_cog(SetupCog(self))
         await self.add_cog(RegistrationCog(self))
-        await self.tree.sync()
-        log.info("Slash command tree synced globally")
 
     async def on_ready(self) -> None:
         assert self.user is not None
@@ -70,6 +70,15 @@ class HemaTournamentBot(commands.Bot):
                 type=discord.ActivityType.watching, name="HEMA tournaments"
             )
         )
+        for guild in self.guilds:
+            self.tree.copy_global_to(guild=guild)
+            await self.tree.sync(guild=guild)
+            log.info("Slash command tree synced to guild %s (%d)", guild.name, guild.id)
+
+    async def on_guild_join(self, guild: discord.Guild) -> None:
+        self.tree.copy_global_to(guild=guild)
+        await self.tree.sync(guild=guild)
+        log.info("Slash command tree synced to new guild %s (%d)", guild.name, guild.id)
 
 
 class GeneralCog(commands.Cog):
@@ -198,8 +207,12 @@ class RegistrationCog(commands.Cog):
         return isinstance(channel, discord.TextChannel) and channel.name == REGISTRATION_CHANEL_NAME
 
     async def _invoke_agent(
-        self, channel: discord.TextChannel, message_content: str
+        self,
+        channel: discord.TextChannel,
+        message_content: str,
+        response_channel: discord.abc.Messageable | None = None,
     ) -> None:
+        reply_to: discord.abc.Messageable = response_channel or channel
         if self.bot.config is None:
             user_config_path = os.environ.get("USER_CONFIG")
             try:
@@ -207,20 +220,20 @@ class RegistrationCog(commands.Cog):
                 log.info("Config loaded on demand: tournament=%s", self.bot.config.tournament_name)
             except Exception as e:
                 log.warning("Config reload failed (USER_CONFIG=%s): %s", user_config_path, e)
-                await channel.send(
+                await reply_to.send(
                     "⚠ No tournament config loaded. Set `USER_CONFIG` env var and restart the bot."
                 )
                 return
 
         if channel.id in self._running:
             log.warning("Concurrent run blocked for channel %s", channel.id)
-            await channel.send("⏳ Already processing — please wait.")
+            await reply_to.send("⏳ Already processing — please wait.")
             return
 
         self._running.add(channel.id)
         try:
-            async with channel.typing():
-                await run_agent(channel, message_content, self.bot.config)
+            async with reply_to.typing():
+                await run_agent(channel, message_content, self.bot.config, response_channel=reply_to)
         finally:
             self._running.discard(channel.id)
 
@@ -228,6 +241,24 @@ class RegistrationCog(commands.Cog):
     async def on_message(self, message: discord.Message) -> None:
         if message.author == self.bot.user:
             return
+
+        # Thread messages: handle payments thread, ignore all other threads
+        if isinstance(message.channel, discord.Thread):
+            log.info(
+                "Thread message from %s in '%s' (attachments=%d)",
+                message.author, message.channel.name, len(message.attachments),
+            )
+            if message.channel.name.startswith(_PAYMENTS_THREAD_PREFIX):
+                try:
+                    await self._handle_payments_thread_message(message)
+                except Exception:
+                    log.exception("Unhandled error in _handle_payments_thread_message")
+                    try:
+                        await message.channel.send("⚠ Unexpected error — check bot logs.")
+                    except Exception:
+                        pass
+            return
+
         if not self._check_registration_channel(message.channel):
             return
         if message.content.startswith("/"):
@@ -244,15 +275,6 @@ class RegistrationCog(commands.Cog):
         if csv_attachment is not None:
             await self._handle_csv_upload(message, csv_attachment)
             return
-
-        # Payment file: any non-CSV attachment when the message mentions "payment"
-        if message.attachments and "payment" in message.content.lower():
-            payment_attachment = next(
-                (a for a in message.attachments if not a.filename.lower().endswith(".csv")), None
-            )
-            if payment_attachment is not None:
-                await self._handle_payment_upload(message, payment_attachment)
-                return
 
         log.info("Registration message from %s: %s", message.author, message.content[:80])
         await self._invoke_agent(message.channel, message.content)  # type: ignore[arg-type]
@@ -277,25 +299,54 @@ class RegistrationCog(commands.Cog):
         synthetic = f"[system: organiser uploaded a CSV file — {attachment.filename} saved as {path.name}. Decide what to do based on current pipeline state.]"
         await self._invoke_agent(channel, synthetic)
 
-    async def _handle_payment_upload(
-        self, message: discord.Message, attachment: discord.Attachment
-    ) -> None:
-        channel = message.channel
-        if not isinstance(channel, discord.TextChannel):
+    async def _handle_payments_thread_message(self, message: discord.Message) -> None:
+        thread = message.channel
+        if not isinstance(thread, discord.Thread):
             return
+        if self.bot.config is None:
+            user_config_path = os.environ.get("USER_CONFIG")
+            try:
+                self.bot.config = load_config(user_config_path)
+            except Exception as e:
+                await thread.send(f"⚠ No tournament config loaded: {e}")
+                return
+
+        if message.attachments:
+            async with thread.typing():
+                for attachment in message.attachments:
+                    await self._parse_and_store_payment_file(attachment, thread, self.bot.config)
+            # Post total count across all parsed files
+            all_txns = load_all_parsed(self.bot.config.data_dir)
+            parsed_dir = self.bot.config.data_dir / "payments" / "parsed"
+            file_count = len(list(parsed_dir.glob("*.json"))) if parsed_dir.exists() else 0
+            await thread.send(
+                f"📊 {len(all_txns)} transaction(s) total across {file_count} file(s)."
+            )
+        else:
+            # Text message in payments thread → forward to agent via synthetic message
+            parent = thread.parent
+            if not isinstance(parent, discord.TextChannel):
+                return
+            synthetic = f"[system: organiser said in 💰 Payments thread: {message.content}]"
+            await self._invoke_agent(parent, synthetic, response_channel=thread)
+
+    async def _parse_and_store_payment_file(
+        self,
+        attachment: discord.Attachment,
+        thread: discord.Thread,
+        config: RegConfig,
+    ) -> None:
         try:
             data = await attachment.read()
             content = data.decode("utf-8", errors="replace")
-            log.info("Read payment file from %s: %s (%d bytes)", message.author, attachment.filename, len(data))
+            log.info("Parsing payment file from thread: %s (%d bytes)", attachment.filename, len(data))
+            txns = await asyncio.to_thread(
+                parse_and_store, content, attachment.filename, config.data_dir, config
+            )
+            await thread.send(f"✅ Parsed {len(txns)} transaction(s) from **{attachment.filename}**")
         except Exception as e:
-            log.exception("Failed to read payment attachment")
-            await channel.send(f"⚠ Could not read the uploaded file: {e}")
-            return
-        augmented = (
-            f"[payment file: {attachment.filename}]\n{content}\n\n"
-            f"{message.content}"
-        )
-        await self._invoke_agent(channel, augmented)
+            log.exception("Failed to parse payment file %s", attachment.filename)
+            await thread.send(f"⚠ Could not parse **{attachment.filename}**: {e}")
 
     @app_commands.command(name="run", description="Start or continue the registration pipeline")
     @app_commands.default_permissions(manage_messages=True)

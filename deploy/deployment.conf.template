@@ -1,0 +1,11 @@
+# ── Required ──────────────────────────────────────────────────────────────────
+APP_NAME=""           # Unique fly.io app name, e.g. hema-agent-naduel26
+DISCORD_TOKEN=""      # Discord bot token for this tournament's bot application
+
+# ── Usually shared across tournaments ─────────────────────────────────────────
+ANTHROPIC_API_KEY=""  # Anthropic API key
+
+# ── Optional overrides ────────────────────────────────────────────────────────
+FLY_REGION="ams"      # Fly.io region (ams = Amsterdam)
+CREDS_PATH="src/creds.json"  # Path to Google service-account JSON (repo-relative)
+VOLUME_SIZE="1"       # Persistent volume size in GB

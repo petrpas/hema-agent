@@ -1,0 +1,23 @@
+app = "hema-agent"          # must match the app name created with: flyctl apps create hema-agent
+primary_region = "iad"
+
+[build]
+
+[env]
+  USER_CONFIG   = "/app/data/user_config.json"
+  BOT_LOCK_FILE = "/tmp/hema-bot.lock"
+
+[[mounts]]
+  source      = "hema_data"
+  destination = "/app/data"
+
+[[restart]]
+  policy = "always"
+
+[deploy]
+  strategy = "immediate"
+
+[[vm]]
+  memory   = "512mb"
+  cpu_kind = "shared"
+  cpus     = 1
