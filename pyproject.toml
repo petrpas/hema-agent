@@ -23,6 +23,9 @@ dependencies = [
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+msgs = ["EN/*.md", "CS/*.md"]
+
 [tool.ruff]
 line-length = 100
 
