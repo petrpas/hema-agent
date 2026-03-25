@@ -197,10 +197,20 @@ def setup_output_sheet(config: RegConfig) -> str:
         raise ValueError(f"Cannot extract sheet ID from output_template: {config.output_template}")
     template_id = m.group(1)
 
+    folder_id: str | None = None
+    if config.drive_folder_url:
+        fm = re.search(r"/folders/([a-zA-Z0-9_-]+)", config.drive_folder_url)
+        if fm:
+            folder_id = fm.group(1)
+            logger.info("Target Drive folder id=%s", folder_id)
+        else:
+            logger.warning("Could not extract folder ID from drive_folder_url: %s", config.drive_folder_url)
+
     tournament_title = config.tournament_name.replace("_", " ").title()
     logger.info("Copying template sheet %s → '%s' ...", template_id, tournament_title)
     gc = gspread.service_account(filename=config.creds_path)
-    sh = gc.copy(template_id, title=f"{tournament_title} Fencers", copy_permissions=False)
+    sh = gc.copy(template_id, title=f"{tournament_title} Fencers", copy_permissions=False,
+                 folder_id=folder_id)
     logger.info("New spreadsheet id=%s", sh.id)
 
     sh.share(None, perm_type="anyone", role="writer")  # type: ignore[arg-type]

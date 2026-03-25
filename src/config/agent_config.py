@@ -47,6 +47,7 @@ class RegAgentSystemConfig(BaseModel):
     data_root_dir: str = "data"
     batch_sleep: float = 2.0  # seconds to wait between LLM batch calls
     output_template: str = ""
+    drive_folder_url: str = ""  # Google Drive folder URL where output sheets are created
 
     def model(self, step: Step) -> str:
         """Return the model string for a step.
