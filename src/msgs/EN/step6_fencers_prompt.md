@@ -3,17 +3,23 @@
 Synchronize the "Fencers" worksheet with the provided list of registered fencers,
 preserving their registration order (fencer [1] goes to data row 2, fencer [2] to row 3, etc.).
 
-Column layout (col index → field: type):
-  1: Reg.             – registration order number: int
-  2: Name             – full name of the fencer: str
-  3: Nat.             – nationality code (CZ, SK, DE, …), blank if unknown: str
-  4: Club             – club name, blank if unknown: str
-  5: HR_ID            – hemaratings.com numeric ID, blank if unknown: int
-  6: Disciplines      – comma-separated disciplines from {{ disciplines }}: str
-  7: Paid             – leave blank (do not touch): str
-  8: Afterparty       – Yes / No / Other, blank if not provided: str
-  9: Borrow weapons   – comma-separated weapon codes the fencer wants to borrow, blank if none: str
-  10: Notes           – free-text notes from the fencer: str
+Column layout:
+  Fixed columns (always present):
+    1: Reg.        – registration order number (managed manually — never write)
+    2: Name        – full name of the fencer
+    3: Nat.        – nationality code (CZ, SK, DE, …), blank if unknown
+    4: Club        – club name, blank if unknown
+    5: HR_ID       – hemaratings.com numeric ID, blank if unknown
+    6: Disciplines – comma-separated discipline codes
+    7: Paid        – leave blank (do not touch)
+
+  Optional columns (columns 8 onward, before Notes):
+    Read row 1 (the header) to determine which optional columns are present and their positions.
+    Possible optional columns: Afterparty, Borrow weapons, Aftersparring, Accommodation.
+    The data you receive includes values for all of these fields — map them to the correct
+    column by matching the header name. If a column is absent from the header, skip that field.
+
+  Last column: Notes – free-text notes from the fencer (always the last column).
 
 Rules:
 1. Row 1 is the header — never overwrite it.

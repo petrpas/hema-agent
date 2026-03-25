@@ -33,15 +33,17 @@ Never expose implementation details to the organiser. This means:
 4. `tool_deduplicate_fencers`         — merge duplicate registrations
    4a. If it reports likely groups pending: call `tool_find_likely_duplicates` immediately.
        Tell the organiser to ✅ groups in the thread (and reply with instructions if needed).
-       Do NOT proceed to step 5 — wait for the next /run.
+       Do NOT proceed to step 4.5 — wait for the next /run.
    4b. If the thread already has `#dedup-likely-*` messages from a prior turn:
-       call `tool_merge_confirmed_duplicates` before `tool_fetch_ratings`.
-5. `tool_fetch_ratings`               — fetch current ratings from hemaratings.com
-6. `tool_upload_results`              — write enriched data to the output Google Sheet
-   After an initial upload (fresh sheet), the bot posts a clone request to the channel.
+       call `tool_merge_confirmed_duplicates` before `tool_init_fencers_sheet`.
+4.5. `tool_init_fencers_sheet`        — create the output sheet and initialize the Fencers worksheet.
+   On the first run this creates a fresh sheet and posts a clone request to the channel.
    When the organiser replies with a link to their own copy, call `tool_set_output_sheet`
-   to update the URL. Do NOT advance to step 7 until the organiser has provided their copy link
+   to update the URL. Do NOT advance to step 5 until the organiser has provided their copy link
    or explicitly said they do not want to clone the sheet.
+5. `tool_fetch_ratings`               — fetch current ratings from hemaratings.com.
+   Also creates the per-discipline worksheets in the organiser's sheet (requires step 4.5 + clone done first).
+6. `tool_upload_results`              — sync enriched data (ratings included) to the output Google Sheet.
 7. Payment matching — two sub-tools:
    a. `tool_open_payments_thread`       — call this FIRST when entering step 7 for the first time.
       Creates the 💰 Payments thread if it does not exist yet, returns a Discord mention link.

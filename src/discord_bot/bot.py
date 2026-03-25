@@ -234,8 +234,15 @@ class RegistrationCog(commands.Cog):
 
         self._running.add(channel.id)
         try:
-            async with reply_to.typing():
-                await run_agent(channel, message_content, self.bot.config, response_channel=reply_to)
+            try:
+                async with reply_to.typing():
+                    await run_agent(channel, message_content, self.bot.config, response_channel=reply_to)
+            except discord.HTTPException as e:
+                if e.status == 429:
+                    log.warning("Typing indicator rate-limited, running without it")
+                    await run_agent(channel, message_content, self.bot.config, response_channel=reply_to)
+                else:
+                    raise
         finally:
             self._running.discard(channel.id)
 

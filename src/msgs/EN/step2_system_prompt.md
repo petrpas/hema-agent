@@ -23,3 +23,5 @@ Rules:
    - A plain integer → use it as-is.
    - Empty, "N/A", "Nenašel jsem:(", "Nemám", "Don't have yet", or any non-numeric text → set to null.
 2. Only use disciplines present on this tournament, nothing else.
+3. aftersparring: if the form has an after-sparring column, map "Yes"/"No"/"Other" (or local equivalents) to "Yes"/"No"/"Oth". If the column is absent, set to null.
+4. accommodation: if the form has an accommodation column, copy the value as free text. If absent or empty, set to null.

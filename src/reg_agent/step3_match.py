@@ -356,27 +356,32 @@ def match_fencers(
         if fencer.hr_id is not None:
             hr_name, hr_nat, hr_club = hr_index.get(fencer.hr_id, (None, None, None))
             # Validate self-reported hr_id against the HR profile name.
-            # If names share no tokens and similarity is very low, the id is likely fake/wrong.
-            if hr_name and _normalize(fencer.name) != _normalize(hr_name):
+            # If the id is absent from the fighters list entirely, it's bogus (e.g. rank entered instead of id).
+            # If names share no tokens and similarity is very low, the id is likely wrong.
+            reject_reason: str | None = None
+            if hr_name is None:
+                reject_reason = f"Self-reported hr_id {fencer.hr_id} rejected: not found in fighters list"
+            elif _normalize(fencer.name) != _normalize(hr_name):
                 ratio = difflib.SequenceMatcher(None, _normalize(fencer.name), _normalize(hr_name)).ratio()
                 fencer_tokens = set(_normalize(fencer.name).split())
                 hr_tokens = set(_normalize(hr_name).split())
                 if ratio < 0.4 and not fencer_tokens & hr_tokens:
-                    logger.warning(
-                        f"Rejecting self-reported hr_id={fencer.hr_id} for '{fencer.name}': "
-                        f"HR profile is '{hr_name}' (ratio={ratio:.2f}) — routing to LLM"
-                    )
-                    problems_note = (
+                    reject_reason = (
                         f"Self-reported hr_id {fencer.hr_id} ({hr_name}) rejected: "
                         f"name mismatch (similarity={ratio:.2f})"
                     )
-                    cleared = fencer.model_copy(update={
-                        "hr_id": None,
-                        "problems": (fencer.problems + " | " if fencer.problems else "") + problems_note,
-                    })
-                    need_llm.append(cleared)
-                    updated_fencers.append(cleared)
-                    continue
+            if reject_reason:
+                logger.warning(
+                    f"Rejecting self-reported hr_id={fencer.hr_id} for '{fencer.name}': "
+                    f"{reject_reason} — routing to LLM"
+                )
+                cleared = fencer.model_copy(update={
+                    "hr_id": None,
+                    "problems": (fencer.problems + " | " if fencer.problems else "") + reject_reason,
+                })
+                need_llm.append(cleared)
+                updated_fencers.append(cleared)
+                continue
             _upsert_cache_entry(
                 cache, fencer.hr_id,
                 hr_name or fencer.name,

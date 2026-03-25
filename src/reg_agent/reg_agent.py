@@ -61,8 +61,9 @@ from step4_dedup import (
     _dedup_table_text,
     _dedup_likely_table_text,
 )
+from step4_5_init import init_fencers_sheet
 from step5_ratings import fetch_ratings
-from step6_upload import upload_results, upload_results_initial, setup_output_sheet
+from step6_upload import upload_results, setup_output_sheet, create_discipline_worksheets
 from step7_payments import (
     load_all_parsed,
     match_payments,
@@ -809,6 +810,69 @@ async def tool_merge_confirmed_duplicates(ctx: RunContext[AgentDeps]) -> str:
 
 
 @registration_agent.tool
+async def tool_init_fencers_sheet(ctx: RunContext[AgentDeps], force_recreate: bool = False) -> str:
+    """Step 4.5: Initialize the Fencers worksheet in the output sheet.
+
+    Creates the output sheet from the template if it doesn't exist yet, then writes
+    the Fencers worksheet with a dynamic header and all deduplicated fencer data.
+
+    force_recreate: if True, copy the template again even if a sheet URL is already set.
+    """
+    fencers = load_fencers_list(ctx.deps.config.data_dir, FENCERS_DEDUPED_FILE)
+    if fencers is None:
+        return "No deduplicated fencers found — run tool_deduplicate_fencers first."
+
+    if err := _once_per_turn(ctx.deps, "tool_init_fencers_sheet"):
+        return err
+
+    sheet_just_created = ctx.deps.config.output_sheet_url is None or force_recreate
+    if sheet_just_created:
+        try:
+            url = await asyncio.to_thread(setup_output_sheet, ctx.deps.config)
+        except Exception as e:
+            log.error("setup_output_sheet failed: %s", e, exc_info=True)
+            return f"error setting up output sheet: {e}"
+        ctx.deps.config.output_sheet_url = url
+        user_config_path = os.environ.get("USER_CONFIG")
+        save_config(
+            RegUserConfig(
+                tournament_name=ctx.deps.config.tournament_name,
+                language=ctx.deps.config.language,
+                output_sheet_url=url,
+                disciplines=ctx.deps.config.disciplines,
+            ),
+            user_config_path,
+        )
+        await _post_to_thread(ctx.deps, "step45-sheet-created", f"📄 Output sheet created: {url}")
+
+    try:
+        await asyncio.to_thread(init_fencers_sheet, fencers, ctx.deps.config)
+    except Exception as e:
+        log.error("init_fencers_sheet failed: %s", e, exc_info=True)
+        return f"error initializing Fencers sheet: {e}"
+
+    await _post_to_thread(ctx.deps, "step45-fencers", "✅ 4.5 — Fencers sheet initialized")
+
+    if sheet_just_created:
+        lang = ctx.deps.config.language
+        bot_email = _bot_email(ctx.deps.config)
+        await ctx.deps.channel.send(
+            _render_msg("sheet_clone_request",
+                        {"url": ctx.deps.config.output_sheet_url, "bot_email": bot_email}, lang)
+        )
+        return (
+            f"Fencers sheet initialized with {len(fencers)} fencers. "
+            f"Output sheet: {ctx.deps.config.output_sheet_url}. "
+            f"Waiting for the organiser to clone the sheet and share their copy."
+        )
+
+    return (
+        f"Fencers sheet re-initialized with {len(fencers)} fencers. "
+        f"Output sheet: {ctx.deps.config.output_sheet_url}"
+    )
+
+
+@registration_agent.tool
 async def tool_fetch_ratings(ctx: RunContext[AgentDeps]) -> str:
     """Step 5: Fetch current ratings and rankings from hemaratings.com."""
     fencers = load_fencers_list(ctx.deps.config.data_dir, FENCERS_DEDUPED_FILE)
@@ -842,19 +906,33 @@ async def tool_fetch_ratings(ctx: RunContext[AgentDeps]) -> str:
             f" WARNING: {len(not_found)} profile(s) returned HTTP 404 and were skipped (rank=9999): {not_found_desc}. "
             f"The hr_id is likely wrong — call tool_correct_match to fix it."
         )
+
+    if ctx.deps.config.output_sheet_url:
+        import gspread as _gspread
+        try:
+            gc = _gspread.service_account(filename=ctx.deps.config.creds_path)
+            sh = gc.open_by_url(ctx.deps.config.output_sheet_url)
+            await asyncio.to_thread(create_discipline_worksheets, ctx.deps.config, sh, fencers, ratings)
+            await _post_to_thread(ctx.deps, "step5-disciplines", "📋 5 — discipline worksheets created")
+        except Exception as e:
+            log.warning("create_discipline_worksheets failed: %s", e)
+            result += f" (discipline worksheet creation failed: {e})"
+
     return result
 
 
 @registration_agent.tool
-async def tool_upload_results(ctx: RunContext[AgentDeps], force_recreate: bool = False) -> str:
-    """Step 6: Write enriched data to the output Google Sheet.
+async def tool_upload_results(ctx: RunContext[AgentDeps]) -> str:
+    """Step 6: Sync enriched data (including ratings) to the output Google Sheet.
 
-    force_recreate: if True, copy the template again and replace the existing output sheet URL.
-    Use this when the organiser asks to regenerate the sheet from scratch.
+    Requires step 4.5 (init_fencers_sheet) and step 5 (fetch_ratings) to have run first.
     """
     fencers = load_fencers_list(ctx.deps.config.data_dir, FENCERS_DEDUPED_FILE)
     if fencers is None:
         return "No deduplicated fencers found — run tool_deduplicate_fencers first."
+
+    if not ctx.deps.config.output_sheet_url:
+        return "No output sheet URL set — run tool_init_fencers_sheet first."
 
     rating_files = sorted(ctx.deps.config.data_dir.glob("ratings_*.json"))
     if not rating_files:
@@ -867,46 +945,12 @@ async def tool_upload_results(ctx: RunContext[AgentDeps], force_recreate: bool =
     if err := _once_per_turn(ctx.deps, "tool_upload_results"):
         return err
 
-    sheet_just_created = ctx.deps.config.output_sheet_url is None or force_recreate
-    if sheet_just_created:
-        try:
-            url = await asyncio.to_thread(setup_output_sheet, ctx.deps.config)
-        except Exception as e:
-            logger.error("setup_output_sheet failed: %s", e, exc_info=True)
-            return f"error setting up output sheet: {e}"
-        ctx.deps.config.output_sheet_url = url
-        user_config_path = os.environ.get("USER_CONFIG")
-        save_config(
-            RegUserConfig(
-                tournament_name=ctx.deps.config.tournament_name,
-                language=ctx.deps.config.language,
-                output_sheet_url=url,
-                disciplines=ctx.deps.config.disciplines,
-            ),
-            user_config_path,
-        )
-        await _post_to_thread(ctx.deps, "step6-sheet-created", f"📄 Output sheet created: {url}")
-
-    upload_fn = upload_results_initial if sheet_just_created else upload_results
     try:
-        await asyncio.to_thread(upload_fn, fencers, ratings, ctx.deps.config)
+        await asyncio.to_thread(upload_results, fencers, ratings, ctx.deps.config)
     except Exception as e:
-        logger.error("upload_results failed: %s", e, exc_info=True)
+        log.error("upload_results failed: %s", e, exc_info=True)
         return f"error: {e}"
     await _post_to_thread(ctx.deps, "step6-upload", "✅ 6 — upload complete")
-
-    if sheet_just_created:
-        lang = ctx.deps.config.language
-        bot_email = _bot_email(ctx.deps.config)
-        await ctx.deps.channel.send(
-            _render_msg("sheet_clone_request",
-                        {"url": ctx.deps.config.output_sheet_url, "bot_email": bot_email}, lang)
-        )
-        return (
-            f"Upload complete. Output sheet: {ctx.deps.config.output_sheet_url}. "
-            f"Waiting for the organiser to clone the sheet and share their copy."
-        )
-
     return f"Upload complete. Output sheet: {ctx.deps.config.output_sheet_url}"
 
 

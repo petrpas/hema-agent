@@ -49,5 +49,7 @@ class FencerRecord(BaseModel):
     disciplines: list[HemaDiscipline] = Field(description="if not set explicitly otherwise assume gender=OpenByDefault and material=SteelByDefault")
     borrow: list[HemaWeapon] = []
     after_party: Literal["Yes"] | Literal["No"] | Literal["Oth"] | None = Field(description="Select closest possible option, if Oth, put a note into notes.")
+    aftersparring: Literal["Yes"] | Literal["No"] | Literal["Oth"] | None = Field(description="Whether the fencer wants to attend after-sparring. Select closest option, if Oth put a note into notes. Null if column not present in form.", default=None)
+    accommodation: str | None = Field(description="Accommodation preference or request, free text. Null if column not present in form.", default=None)
     notes: str | None = Field(description="Anything that fencer put into registration form but did not got into other fields")
     problems: str | None = Field(description="If the content does not match perfectly, list problems here")
