@@ -63,7 +63,7 @@ from step4_dedup import (
 )
 from step4_5_init import init_fencers_sheet
 from step5_ratings import fetch_ratings
-from step6_upload import upload_results, setup_output_sheet, create_discipline_worksheets
+from step6_upload import upload_results, create_discipline_worksheets
 from step7_payments import (
     load_all_parsed,
     match_payments,
@@ -810,40 +810,27 @@ async def tool_merge_confirmed_duplicates(ctx: RunContext[AgentDeps]) -> str:
 
 
 @registration_agent.tool
-async def tool_init_fencers_sheet(ctx: RunContext[AgentDeps], force_recreate: bool = False) -> str:
+async def tool_init_fencers_sheet(ctx: RunContext[AgentDeps]) -> str:
     """Step 4.5: Initialize the Fencers worksheet in the output sheet.
 
-    Creates the output sheet from the template if it doesn't exist yet, then writes
-    the Fencers worksheet with a dynamic header and all deduplicated fencer data.
-
-    force_recreate: if True, copy the template again even if a sheet URL is already set.
+    If no output sheet URL is set yet, posts a request for the organiser to create
+    a blank Google Sheet and share it. Once the URL is set (via tool_set_output_sheet),
+    writes the Fencers worksheet with a dynamic header and all deduplicated fencer data.
     """
     fencers = load_fencers_list(ctx.deps.config.data_dir, FENCERS_DEDUPED_FILE)
     if fencers is None:
         return "No deduplicated fencers found — run tool_deduplicate_fencers first."
 
+    if not ctx.deps.config.output_sheet_url:
+        bot_email = _bot_email(ctx.deps.config)
+        lang = ctx.deps.config.language
+        await ctx.deps.channel.send(
+            _render_msg("sheet_blank_request", {"bot_email": bot_email}, lang)
+        )
+        return "Waiting for the organiser to create a blank sheet and share the URL."
+
     if err := _once_per_turn(ctx.deps, "tool_init_fencers_sheet"):
         return err
-
-    sheet_just_created = ctx.deps.config.output_sheet_url is None or force_recreate
-    if sheet_just_created:
-        try:
-            url = await asyncio.to_thread(setup_output_sheet, ctx.deps.config)
-        except Exception as e:
-            log.error("setup_output_sheet failed: %s", e, exc_info=True)
-            return f"error setting up output sheet: {e}"
-        ctx.deps.config.output_sheet_url = url
-        user_config_path = os.environ.get("USER_CONFIG")
-        save_config(
-            RegUserConfig(
-                tournament_name=ctx.deps.config.tournament_name,
-                language=ctx.deps.config.language,
-                output_sheet_url=url,
-                disciplines=ctx.deps.config.disciplines,
-            ),
-            user_config_path,
-        )
-        await _post_to_thread(ctx.deps, "step45-sheet-created", f"📄 Output sheet created: {url}")
 
     try:
         await asyncio.to_thread(init_fencers_sheet, fencers, ctx.deps.config)
@@ -852,24 +839,7 @@ async def tool_init_fencers_sheet(ctx: RunContext[AgentDeps], force_recreate: bo
         return f"error initializing Fencers sheet: {e}"
 
     await _post_to_thread(ctx.deps, "step45-fencers", "✅ 4.5 — Fencers sheet initialized")
-
-    if sheet_just_created:
-        lang = ctx.deps.config.language
-        bot_email = _bot_email(ctx.deps.config)
-        await ctx.deps.channel.send(
-            _render_msg("sheet_clone_request",
-                        {"url": ctx.deps.config.output_sheet_url, "bot_email": bot_email}, lang)
-        )
-        return (
-            f"Fencers sheet initialized with {len(fencers)} fencers. "
-            f"Output sheet: {ctx.deps.config.output_sheet_url}. "
-            f"Waiting for the organiser to clone the sheet and share their copy."
-        )
-
-    return (
-        f"Fencers sheet re-initialized with {len(fencers)} fencers. "
-        f"Output sheet: {ctx.deps.config.output_sheet_url}"
-    )
+    return f"Fencers sheet initialized with {len(fencers)} fencers. Output sheet: {ctx.deps.config.output_sheet_url}"
 
 
 @registration_agent.tool
