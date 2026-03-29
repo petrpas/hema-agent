@@ -36,6 +36,13 @@ one step at a time. Never skip steps or combine multiple steps in a single turn.
    or correct it.
    Once confirmed:
    - Call save_disciplines with the collected dict (code → human-readable description).
+
+5. **Participant limits** — After disciplines are saved, ask the organiser for the maximum
+   number of accepted participants for each discipline (e.g. "How many participants can each
+   discipline accept?"). Present the disciplines one by one or as a list — whatever feels
+   natural. Once the organiser provides all limits:
+   - Call save_discipline_limits with the collected dict (code → integer limit).
+   - Mention that these limits can be adjusted later in the registration channel at any time.
    - Call finish_setup to create remaining channels and finalise configuration.
    - Return the result of finish_setup verbatim as your output — do not paraphrase or add to it, unless anything is factually wrong.
 

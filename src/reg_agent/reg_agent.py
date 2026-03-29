@@ -34,7 +34,7 @@ langfuse = get_langfuse_client()
 from config import RegConfig, RegUserConfig, save_config
 from discord_bot.discord_utils import send_long
 from models import FencerRecord
-from discord_bot.msg_constants import PAYMENTS_THREAD_INTRO
+from discord_bot.msg_constants import PAYMENTS_THREAD_INTRO, POOLS_CHANNEL_NAME
 from msgs import read_msg as _read_msg, render_msg as _render_msg
 from setup_agent.setup_agent import SHARED_MEMORY_PATH
 from step1_download import download_registrations
@@ -63,7 +63,8 @@ from step4_dedup import (
 )
 from step4_5_init import init_fencers_sheet
 from step5_ratings import fetch_ratings
-from step6_upload import upload_results, create_discipline_worksheets
+from step6_upload import upload_results, create_discipline_worksheets, setup_output_sheet, recalculate_seeds, remove_fencers_from_sheets
+from step_typst import render_all as _render_all
 from step7_payments import (
     load_all_parsed,
     match_payments,
@@ -75,6 +76,11 @@ from utils import (
     load_fencers_list,
     save_fencers_list,
     load_ratings,
+    load_withdrawn,
+    save_withdrawn,
+    fuzzy_match_fencers,
+    normalize_name,
+    WithdrawnEntry,
     REG_VER_DIR,
     REG_VER_FILE_PTN,
     REG_VER_FILE_REG,
@@ -95,6 +101,12 @@ _THREAD_NAMES = {
 
 _PAYMENTS_THREAD_PREFIX = "💰"
 _PAYMENTS_THREAD_NAME = "💰 Payments"
+
+_TYPST_THREAD_PREFIX = "📸"
+_TYPST_THREAD_NAMES = {
+    "EN": "📸 Fencers Lists",
+    "CS": "📸 Seznamy šermířů",
+}
 
 
 
@@ -123,11 +135,13 @@ def _system_prompt(ctx: RunContext[AgentDeps]) -> str:
     lang = ctx.deps.config.language
     bot_email = _bot_email(ctx.deps.config)
     sheet_access = _render_msg("sheet_access_request", {"bot_email": bot_email}, lang)
+    reg_complete = _read_msg("reg_complete", lang)  # contains <<CHANNEL>> placeholder
     return _render_msg("reg_agent_system_prompt", {
         "tournament_name": ctx.deps.config.tournament_name,
         "sheet_access_request": sheet_access,
+        "reg_complete": reg_complete,
         "memory": _read_memory(),
-    })
+    }, lang)
 
 
 # ── Creds helpers ──────────────────────────────────────────────────────────────
@@ -191,6 +205,33 @@ async def _create_payments_thread(channel: discord.TextChannel, lang: str = "EN"
         return thread
     except Exception:
         log.exception("Failed to create payments thread")
+        return None
+
+
+async def _find_typst_thread(channel: discord.TextChannel) -> discord.Thread | None:
+    """Return the most recent typst/lists thread, unarchiving if needed."""
+    candidates = [t for t in channel.threads if t.name.startswith(_TYPST_THREAD_PREFIX)]
+    if candidates:
+        return max(candidates, key=lambda t: t.created_at)
+    async for t in channel.archived_threads(limit=10):
+        if t.name.startswith(_TYPST_THREAD_PREFIX):
+            await t.edit(archived=False)
+            return t
+    return None
+
+
+async def _ensure_typst_thread(channel: discord.TextChannel, lang: str) -> discord.Thread | None:
+    """Return existing typst thread or create one."""
+    thread = await _find_typst_thread(channel)
+    if thread is not None:
+        return thread
+    try:
+        name = _TYPST_THREAD_NAMES.get(lang, _TYPST_THREAD_NAMES["EN"])
+        anchor = await channel.send(name)
+        thread = await anchor.create_thread(name=name, auto_archive_duration=1440)
+        return thread
+    except Exception:
+        log.exception("Failed to create typst thread")
         return None
 
 
@@ -596,6 +637,16 @@ async def tool_correct_match(
     _save_cache(cache, cache_path)
     save_corrections(corrections, data_dir)
 
+    # Also patch fencers_deduped.json so upload_results sees the corrected hr_id immediately.
+    deduped = load_fencers_list(data_dir, FENCERS_DEDUPED_FILE)
+    if deduped is not None:
+        corrected_name_lower = normalize_name(fencer_name)
+        for i, f in enumerate(deduped):
+            if normalize_name(f.name) == corrected_name_lower:
+                deduped[i] = f.model_copy(update={"hr_id": correct_hr_id})
+                break
+        save_fencers_list(deduped, data_dir / FENCERS_DEDUPED_FILE)
+
     old_str = "no profile" if old_hr_id is None else f"hr_id={old_hr_id}"
     new_str = "no profile" if correct_hr_id is None else f"hr_id={correct_hr_id}"
     summary = f"Corrected: {fencer_name} → {new_str} (was {old_str})"
@@ -813,9 +864,10 @@ async def tool_merge_confirmed_duplicates(ctx: RunContext[AgentDeps]) -> str:
 async def tool_init_fencers_sheet(ctx: RunContext[AgentDeps]) -> str:
     """Step 4.5: Initialize the Fencers worksheet in the output sheet.
 
-    If no output sheet URL is set yet, posts a request for the organiser to create
-    a blank Google Sheet and share it. Once the URL is set (via tool_set_output_sheet),
-    writes the Fencers worksheet with a dynamic header and all deduplicated fencer data.
+    If no output sheet URL is set yet, creates a blank sheet in the configured Drive
+    folder and asks the organiser to make a copy, share it, and paste the link back.
+    Once the URL is set (via tool_set_output_sheet), writes the Fencers worksheet with
+    a dynamic header and all deduplicated fencer data.
     """
     fencers = load_fencers_list(ctx.deps.config.data_dir, FENCERS_DEDUPED_FILE)
     if fencers is None:
@@ -824,10 +876,19 @@ async def tool_init_fencers_sheet(ctx: RunContext[AgentDeps]) -> str:
     if not ctx.deps.config.output_sheet_url:
         bot_email = _bot_email(ctx.deps.config)
         lang = ctx.deps.config.language
+        try:
+            url = await asyncio.to_thread(setup_output_sheet, ctx.deps.config)
+        except Exception as e:
+            log.error("setup_output_sheet failed: %s", e, exc_info=True)
+            return f"error creating output sheet: {e}"
         await ctx.deps.channel.send(
-            _render_msg("sheet_blank_request", {"bot_email": bot_email}, lang)
+            _render_msg("sheet_clone_request", {"url": url, "bot_email": bot_email}, lang)
         )
-        return "Waiting for the organiser to create a blank sheet and share the URL."
+        return (
+            f"Output sheet created at {url}. "
+            "Clone request with all instructions has been posted to the organiser. "
+            "Output only: \"⏳ Waiting for the link to your copy.\""
+        )
 
     if err := _once_per_turn(ctx.deps, "tool_init_fencers_sheet"):
         return err
@@ -925,6 +986,157 @@ async def tool_upload_results(ctx: RunContext[AgentDeps]) -> str:
 
 
 @registration_agent.tool
+async def tool_recalculate_seeds(ctx: RunContext[AgentDeps]) -> str:
+    """Recalculate the Seed column in all discipline worksheets.
+
+    Call when the organiser requests a seed recalculation, e.g. after manually editing
+    HRank values. Seeds are assigned 1..N by ascending HRank; unranked fencers follow
+    in their row order (registration order).
+    """
+    if not ctx.deps.config.output_sheet_url:
+        return "No output sheet URL set — complete step 4.5 first."
+
+    import gspread as _gs
+    try:
+        gc = _gs.service_account(filename=ctx.deps.config.creds_path)
+        sh = gc.open_by_url(ctx.deps.config.output_sheet_url)
+    except Exception as e:
+        return f"error opening sheet: {e}"
+
+    results = []
+    for code in ctx.deps.config.disciplines:
+        try:
+            ws = sh.worksheet(code)
+            await asyncio.to_thread(recalculate_seeds, ws)
+            results.append(f"{code} ✓")
+        except Exception as e:
+            log.error("recalculate_seeds failed for %s: %s", code, e, exc_info=True)
+            results.append(f"{code} ✗ {e}")
+
+    return "Seeds recalculated: " + ", ".join(results)
+
+
+@registration_agent.tool
+async def tool_remove_fencers(
+    ctx: RunContext[AgentDeps],
+    names: list[str],
+    confirmed: bool = False,
+) -> str:
+    """Withdraw fencers who will no longer attend.
+
+    Call first with confirmed=False to fuzzy-match the names and get a confirmation
+    summary. Then call again with confirmed=True and the exact matched names to execute.
+
+    On confirmation: adds fencers to the withdrawn list (so re-running the pipeline
+    never re-adds them) and deletes their rows from all worksheets.
+    """
+    fencers = load_fencers_list(ctx.deps.config.data_dir, FENCERS_DEDUPED_FILE)
+    if fencers is None:
+        return "No fencer data found — run the pipeline through step 4 first."
+
+    if not confirmed:
+        lines = []
+        for query in names:
+            matches = fuzzy_match_fencers(query, fencers)
+            if not matches:
+                lines.append(f'• "{query}" — no match found')
+            else:
+                candidates = ", ".join(
+                    f"{f.name} (HR_ID={f.hr_id})" for f in matches[:3]
+                )
+                lines.append(f'• "{query}" → {candidates}')
+        return (
+            "Fuzzy match results:\n" + "\n".join(lines) +
+            "\n\nCall again with the exact matched names and confirmed=True to proceed."
+        )
+
+    # confirmed=True — execute withdrawal
+    withdrawn = load_withdrawn(ctx.deps.config.data_dir)
+    existing_names = {w.name.lower() for w in withdrawn}
+
+    newly_withdrawn: list[WithdrawnEntry] = []
+    not_in_data: list[str] = []
+    for name in names:
+        match = next((f for f in fencers if normalize_name(f.name) == normalize_name(name)), None)
+        if match is None:
+            not_in_data.append(name)
+        elif match.name.lower() not in existing_names:
+            newly_withdrawn.append(WithdrawnEntry(name=match.name, hr_id=match.hr_id))
+
+    save_withdrawn(withdrawn + newly_withdrawn, ctx.deps.config.data_dir)
+
+    sheet_result: dict = {"removed": [], "not_found": names}
+    if ctx.deps.config.output_sheet_url:
+        try:
+            sheet_result = await asyncio.to_thread(
+                remove_fencers_from_sheets, names, ctx.deps.config
+            )
+        except Exception as e:
+            log.error("remove_fencers_from_sheets failed: %s", e, exc_info=True)
+            return f"Withdrawn list updated but sheet removal failed: {e}"
+
+    parts = []
+    if sheet_result["removed"]:
+        parts.append(f"Removed from sheets: {', '.join(sheet_result['removed'])}")
+    if sheet_result["not_found"]:
+        parts.append(f"Not found in sheets: {', '.join(sheet_result['not_found'])}")
+    if not_in_data:
+        parts.append(f"Not found in fencer data: {', '.join(not_in_data)}")
+    parts.append(f"Withdrawn list now has {len(withdrawn) + len(newly_withdrawn)} fencer(s).")
+    return " | ".join(parts)
+
+
+@registration_agent.tool
+async def tool_unwithdraw_fencers(
+    ctx: RunContext[AgentDeps],
+    names: list[str],
+    confirmed: bool = False,
+) -> str:
+    """Re-admit previously withdrawn fencers.
+
+    Call first with confirmed=False to see who would be un-withdrawn.
+    Call again with confirmed=True and exact names to execute.
+
+    After un-withdrawing, the organiser must re-run step 6 to add the fencers
+    back to the sheets.
+    """
+    withdrawn = load_withdrawn(ctx.deps.config.data_dir)
+    if not withdrawn:
+        return "No withdrawn fencers on record."
+
+    if not confirmed:
+        lines = []
+        for query in names:
+            matches = [w for w in withdrawn if query.lower() in w.name.lower()]
+            if not matches:
+                lines.append(f'• "{query}" — not in withdrawn list')
+            else:
+                candidates = ", ".join(
+                    f"{w.name} (HR_ID={w.hr_id})" for w in matches[:3]
+                )
+                lines.append(f'• "{query}" → {candidates}')
+        return (
+            "Withdrawn list matches:\n" + "\n".join(lines) +
+            "\n\nCall again with the exact matched names and confirmed=True to proceed."
+        )
+
+    # confirmed=True — remove from withdrawn list
+    names_norm = {normalize_name(n) for n in names}
+    remaining = [w for w in withdrawn if normalize_name(w.name) not in names_norm]
+    restored = [w for w in withdrawn if normalize_name(w.name) in names_norm]
+
+    save_withdrawn(remaining, ctx.deps.config.data_dir)
+
+    if not restored:
+        return "None of the provided names matched the withdrawn list."
+    names_str = ", ".join(w.name for w in restored)
+    return (
+        f"Removed from withdrawn list: {names_str}. "
+        f"Re-run step 6 to add them back to the sheets."
+    )
+
+
+@registration_agent.tool
 async def tool_set_output_sheet(ctx: RunContext[AgentDeps], url: str) -> str:
     """Update the output sheet URL after the organiser shares their own copy with the bot.
 
@@ -946,6 +1158,7 @@ async def tool_set_output_sheet(ctx: RunContext[AgentDeps], url: str) -> str:
             language=ctx.deps.config.language,
             output_sheet_url=url,
             disciplines=ctx.deps.config.disciplines,
+            discipline_limits=ctx.deps.config.discipline_limits,
         ),
         user_config_path,
     )
@@ -1125,6 +1338,92 @@ async def tool_write_payments(ctx: RunContext[AgentDeps]) -> str:
     if not_found:
         result_msg += f" Not found in sheet: {', '.join(not_found)}."
     return result_msg
+
+
+# ── Pipeline finale helpers ────────────────────────────────────────────────────
+
+@registration_agent.tool
+async def tool_create_pools_channel(ctx: RunContext[AgentDeps]) -> str:
+    """Create the #hsq-pools-alchemy channel for pool setup and return a Discord mention link.
+
+    Creates the channel if it does not exist. Returns <#channel_id> so the agent
+    can post a clickable mention directly in the registration channel.
+    """
+    guild = ctx.deps.channel.guild
+    if guild is None:
+        return "error: not in a guild"
+    existing = discord.utils.get(guild.text_channels, name=POOLS_CHANNEL_NAME)
+    if existing is not None:
+        return f"<#{existing.id}>"
+    try:
+        ch = await guild.create_text_channel(POOLS_CHANNEL_NAME)
+        log.info("Created #%s in guild %s", POOLS_CHANNEL_NAME, guild)
+    except Exception as e:
+        log.error("Failed to create #%s: %s", POOLS_CHANNEL_NAME, e)
+        return f"error creating channel: {e}"
+    return f"<#{ch.id}>"
+
+
+@registration_agent.tool
+async def tool_generate_social_media_list(ctx: RunContext[AgentDeps]) -> str:
+    """Render PNG participant lists (overall fencer list + one per discipline) and post them.
+
+    Uses Typst to compile fencers.typ and disciplines.typ templates. PNGs are saved to
+    data/{tournament}/lists/ and posted to the dedicated 📸 thread. Each call appends a
+    new post — previous renders are preserved.
+
+    Requires the output sheet to be set and accessible (steps 1-6 complete).
+    """
+    try:
+        png_paths = await asyncio.get_event_loop().run_in_executor(
+            None, _render_all, ctx.deps.config
+        )
+    except ValueError as e:
+        return f"error: {e}"
+    except Exception as e:
+        log.exception("render_all failed")
+        return f"error rendering lists: {e}"
+
+    if not png_paths:
+        return "error: no PNG files produced — check typst compilation logs."
+
+    thread = await _ensure_typst_thread(ctx.deps.channel, ctx.deps.config.language)
+    if thread is None:
+        return f"Rendered {len(png_paths)} PNG(s) but could not post to thread — files saved to data/{ctx.deps.config.tournament_name}/lists/."
+
+    files = [discord.File(str(p), filename=p.name) for p in png_paths]
+    # Discord allows up to 10 files per message; send in batches
+    batch_size = 10
+    for i in range(0, len(files), batch_size):
+        batch = files[i:i + batch_size]
+        await thread.send(files=batch)
+
+    return f"Posted {len(png_paths)} PNG(s) to the 📸 thread."
+
+
+@registration_agent.tool
+async def tool_set_discipline_limit(ctx: RunContext[AgentDeps], discipline_code: str, limit: int) -> str:
+    """Update the participant capacity limit for one discipline and persist it.
+
+    discipline_code: e.g. "LS", "LSW". limit: maximum number of accepted fencers.
+    """
+    if discipline_code not in ctx.deps.config.disciplines:
+        known = ", ".join(ctx.deps.config.disciplines.keys()) or "(none configured)"
+        return f"error: unknown discipline '{discipline_code}'. Known: {known}"
+
+    ctx.deps.config.discipline_limits[discipline_code] = limit
+    user_config_path = os.environ.get("USER_CONFIG")
+    save_config(
+        RegUserConfig(
+            tournament_name=ctx.deps.config.tournament_name,
+            language=ctx.deps.config.language,
+            output_sheet_url=ctx.deps.config.output_sheet_url,
+            disciplines=ctx.deps.config.disciplines,
+            discipline_limits=ctx.deps.config.discipline_limits,
+        ),
+        user_config_path,
+    )
+    return f"Limit for {discipline_code} set to {limit}."
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────

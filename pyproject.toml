@@ -17,7 +17,8 @@ dependencies = [
     "python-dotenv>=1.0",
     "langfuse>=3.0",
     "table2ascii>=1.0",
-    "jinja2>=3.0"
+    "jinja2>=3.0",
+    "typst>=0.14"
 ]
 
 [tool.setuptools.packages.find]

@@ -46,7 +46,6 @@ class RegAgentSystemConfig(BaseModel):
     creds_path: str = "creds.json"
     data_root_dir: str = "data"
     batch_sleep: float = 2.0  # seconds to wait between LLM batch calls
-    output_template: str = ""
     drive_folder_url: str = ""  # Google Drive folder URL where output sheets are created
 
     def model(self, step: Step) -> str:
@@ -74,6 +73,7 @@ class RegUserConfig(BaseModel):
     language: str = "EN"
     output_sheet_url: str | None = None
     disciplines: dict = {}
+    discipline_limits: dict[str, int] = {}  # discipline code → max accepted fencers
 
 
 # ── Combined runtime config ────────────────────────────────────────────────────

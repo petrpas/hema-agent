@@ -213,6 +213,21 @@ def save_disciplines(ctx: RunContext[SetupDeps], disciplines: dict[str, str]) ->
 
 
 @setup_agent.tool
+def save_discipline_limits(ctx: RunContext[SetupDeps], limits: dict[str, int]) -> str:
+    """Save per-discipline participant capacity limits to user config.
+
+    limits: dict mapping discipline code to maximum number of accepted fencers,
+    e.g. {"LS": 32, "LSW": 16}.
+    """
+    try:
+        _update_user_config(ctx.deps.user_config_path, {"discipline_limits": limits})
+        log.info("Saved discipline limits: %s", limits)
+        return f"Saved limits: {', '.join(f'{k}={v}' for k, v in limits.items())}"
+    except Exception as e:
+        return f"error: {e}"
+
+
+@setup_agent.tool
 async def finish_setup(ctx: RunContext[SetupDeps]) -> str:
     """Finalise setup: create additional channels and perform any post-setup actions.
 
