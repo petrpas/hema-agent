@@ -280,11 +280,10 @@ def _cache_lookup_by_email_and_name(cache: dict[str, CacheEntry], email: str, na
 
 
 def _cache_lookup_by_name(cache: dict[str, CacheEntry], full_name: str) -> CacheEntry | None:
-    name_lower = full_name.strip().lower()
+    name_norm = _normalize(full_name.strip())
     for entry in cache.values():
-        if entry.full_name.strip().lower() == name_lower:
-            return entry
-        if name_lower in {n.strip().lower() for n in entry.alternative_names_used}:
+        known = {entry.full_name} | set(entry.alternative_names_used)
+        if any(_normalize(n.strip()) == name_norm for n in known):
             return entry
     return None
 
@@ -365,7 +364,7 @@ def match_fencers(
                 ratio = difflib.SequenceMatcher(None, _normalize(fencer.name), _normalize(hr_name)).ratio()
                 fencer_tokens = set(_normalize(fencer.name).split())
                 hr_tokens = set(_normalize(hr_name).split())
-                if ratio < 0.4 and not fencer_tokens & hr_tokens:
+                if ratio < 0.4 or not fencer_tokens & hr_tokens:
                     reject_reason = (
                         f"Self-reported hr_id {fencer.hr_id} ({hr_name}) rejected: "
                         f"name mismatch (similarity={ratio:.2f})"

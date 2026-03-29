@@ -13,6 +13,7 @@ from pydantic_ai.models.anthropic import AnthropicModelSettings
 from config import RegConfig, Step
 from models import FencerRating, FencerRecord
 from msgs import render_msg
+from utils import load_withdrawn, normalize_name
 
 logger = logging.getLogger(__name__)
 
@@ -187,15 +188,17 @@ def upload_discipline(discipline_code: str, fencers: list[FencerRecord], ratings
 
 
 def setup_output_sheet(config: RegConfig) -> str:
-    """Copy the output template and return the new sheet URL.
+    """Create a blank output sheet in the configured Drive folder and return its URL.
 
-    Only copies the template — discipline worksheets are created later by
-    create_discipline_worksheets() once ratings are available (step 5).
+    Uses the Drive API directly (not gspread.create/copy) to place the file in the
+    target folder in a single API call.  gspread's create() internally creates the
+    file first then moves it, briefly touching the service account's own storage and
+    triggering a quota error even on a quota-less SA.
+
+    Discipline worksheets are added later by create_discipline_worksheets().
     """
-    m = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", config.output_template)
-    if not m:
-        raise ValueError(f"Cannot extract sheet ID from output_template: {config.output_template}")
-    template_id = m.group(1)
+    from google.oauth2.service_account import Credentials
+    from googleapiclient.discovery import build as _build
 
     folder_id: str | None = None
     if config.drive_folder_url:
@@ -206,23 +209,119 @@ def setup_output_sheet(config: RegConfig) -> str:
         else:
             logger.warning("Could not extract folder ID from drive_folder_url: %s", config.drive_folder_url)
 
+    scopes = [
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds = Credentials.from_service_account_file(config.creds_path, scopes=scopes)
+    drive = _build("drive", "v3", credentials=creds)
+
     tournament_title = config.tournament_name.replace("_", " ").title()
-    logger.info("Copying template sheet %s → '%s' ...", template_id, tournament_title)
-    gc = gspread.service_account(filename=config.creds_path)
-    sh = gc.copy(template_id, title=f"{tournament_title} Fencers", copy_permissions=False,
-                 folder_id=folder_id)
-    logger.info("New spreadsheet id=%s", sh.id)
+    title = f"{tournament_title} Fencers"
+    logger.info("Creating blank sheet '%s' in folder %s ...", title, folder_id)
+    metadata: dict = {
+        "name": title,
+        "mimeType": "application/vnd.google-apps.spreadsheet",
+    }
+    if folder_id:
+        metadata["parents"] = [folder_id]
+    f = drive.files().create(body=metadata, fields="id", supportsAllDrives=True).execute()
+    sheet_id = f["id"]
+    logger.info("New spreadsheet id=%s", sheet_id)
+
+    gc = gspread.authorize(creds)
+    sh = gc.open_by_key(sheet_id)
+
+    # Rename the default tab so init_fencers_sheet() can find it by name.
+    sh.get_worksheet(0).update_title("Fencers")
 
     sh.share(None, perm_type="anyone", role="writer")  # type: ignore[arg-type]
     logger.info("Shared with anyone-with-link (writer)")
 
-    url = f"https://docs.google.com/spreadsheets/d/{sh.id}/edit"
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
     logger.info("Output sheet created: %s", url)
     return url
 
 
 _DISCIPLINE_HEADER = ["No.", "Name", "Nat.", "Club", "HR_ID", "HRating", "HRank"]
 _BOLD = {"textFormat": {"bold": True}}
+_THICK = {"style": "SOLID_MEDIUM"}
+_DISCIPLINE_ROWS = 200
+
+
+def _col_letter(n: int) -> str:
+    """Convert 1-based column number to A1 letter notation (e.g. 1→A, 28→AB)."""
+    result = ""
+    while n:
+        n, r = divmod(n - 1, 26)
+        result = chr(65 + r) + result
+    return result
+
+
+def recalculate_seeds(ws: gspread.Worksheet) -> None:
+    """Recalculate the Seed column for a discipline worksheet.
+
+    Locates HRank and Seed columns by name; adds Seed after HRank if absent.
+    Ranked fencers (numeric HRank) are seeded 1..N ascending; unranked fencers
+    follow in their original row order (= registration order).
+    Only rows with a non-empty No. cell are considered.
+    """
+    all_values = ws.get_all_values()
+    if len(all_values) < 2:
+        return
+
+    header = all_values[0]
+
+    def _find(name: str) -> int | None:
+        for i, h in enumerate(header):
+            if h.strip() == name:
+                return i + 1  # 1-based
+        return None
+
+    no_col = _find("No.")
+    hrank_col = _find("HRank")
+    if hrank_col is None:
+        logger.warning("HRank column not found in '%s' — skipping seed calculation", ws.title)
+        return
+
+    seed_col = _find("Seed")
+    if seed_col is None:
+        seed_col = hrank_col + 1
+        ws.update_cell(1, seed_col, "Seed")
+        ws.format(f"{_col_letter(seed_col)}1", {
+            "textFormat": {"bold": True},
+            "horizontalAlignment": "CENTER",
+            "borders": {"bottom": _THICK},
+        })
+        logger.info("Added Seed column at col %d in '%s'", seed_col, ws.title)
+
+    ranked: list[tuple[int, int]] = []   # (row_idx, hrank)
+    unranked: list[int] = []             # row_idx
+
+    for i, row in enumerate(all_values[1:], 1):
+        no_val = row[no_col - 1].strip() if no_col and len(row) >= no_col else ""
+        if not no_val:
+            continue
+        hrank_val = row[hrank_col - 1].strip() if len(row) >= hrank_col else ""
+        try:
+            ranked.append((i, int(hrank_val)))
+        except (ValueError, TypeError):
+            unranked.append(i)
+
+    if not ranked and not unranked:
+        return
+
+    ranked.sort(key=lambda x: x[1])
+    seeding_order = [row_idx for row_idx, _ in ranked] + unranked
+    seed_map = {row_idx: seed_num for seed_num, row_idx in enumerate(seeding_order, 1)}
+
+    last_row = max(seed_map)
+    updates = [[seed_map.get(i, "")] for i in range(1, last_row + 1)]
+    ws.update(updates, f"{_col_letter(seed_col)}2")
+    logger.info(
+        "Seeds recalculated for '%s': %d ranked, %d unranked",
+        ws.title, len(ranked), len(unranked),
+    )
 
 
 def create_discipline_worksheets(
@@ -258,20 +357,80 @@ def create_discipline_worksheets(
             ])
 
         logger.info("Creating worksheet '%s' (%d fencers)", code, len(rows))
-        ws = sh.add_worksheet(title=code, rows=max(200, len(rows) + 10), cols=10)
+        ws = sh.add_worksheet(title=code, rows=max(_DISCIPLINE_ROWS, len(rows) + 10), cols=10)
         ws.update([_DISCIPLINE_HEADER], "A1")
         if rows:
             ws.update(rows, "A2")
 
-        # Bold header row and No. column
-        ws.format("A1:G1", _BOLD)
-        if rows:
-            ws.format(f"A1:A{len(rows) + 1}", _BOLD)
+        # Pre-fill No. numbers 1–200
+        ws.update([[i] for i in range(1, _DISCIPLINE_ROWS + 1)], "A2")
+
+        # A1: bold, centered, thick bottom border only
+        ws.format("A1", {
+            "textFormat": {"bold": True},
+            "horizontalAlignment": "CENTER",
+            "borders": {"bottom": _THICK},
+        })
+        # B1:G1: bold, centered, thick bottom border
+        ws.format("B1:G1", {
+            "textFormat": {"bold": True},
+            "horizontalAlignment": "CENTER",
+            "borders": {"bottom": _THICK},
+        })
+        # A2:A{_DISCIPLINE_ROWS+1}: bold, thick right border
+        ws.format(f"A2:A{_DISCIPLINE_ROWS + 1}", {
+            "textFormat": {"bold": True},
+            "borders": {"right": _THICK},
+        })
+
+        recalculate_seeds(ws)
 
     fencers_ws = sh.worksheet(FENCERS_WORKSHEET)
     discipline_worksheets = [sh.worksheet(code) for code in config.disciplines]
     sh.reorder_worksheets([fencers_ws] + discipline_worksheets)
     logger.info("Worksheets reordered: %s", [FENCERS_WORKSHEET] + list(config.disciplines))
+
+
+def remove_fencers_from_sheets(names: list[str], config: RegConfig) -> dict[str, list[str]]:
+    """Delete rows for the given fencer names from all worksheets.
+
+    Searches by the Name column (case-insensitive exact match).
+    Deletes bottom-to-top so row indexes stay valid during iteration.
+    Recalculates seeds for any discipline worksheet that had deletions.
+
+    Returns {"removed": [...], "not_found": [...]}.
+    """
+    gc = gspread.service_account(filename=config.creds_path)
+    sh = gc.open_by_url(config.output_sheet_url)
+
+    names_lower = {normalize_name(n): n for n in names}
+    removed: set[str] = set()
+
+    for ws in sh.worksheets():
+        all_values = ws.get_all_values()
+        if not all_values:
+            continue
+        header = all_values[0]
+        name_col = next((i for i, h in enumerate(header) if h.strip() == "Name"), None)
+        if name_col is None:
+            continue
+
+        rows_to_delete: list[int] = []  # 1-based sheet row numbers
+        for row_i, row in enumerate(all_values[1:], 2):
+            cell = normalize_name(row[name_col].strip()) if len(row) > name_col else ""
+            if cell in names_lower:
+                rows_to_delete.append(row_i)
+                removed.add(names_lower[cell])
+
+        for row_i in sorted(rows_to_delete, reverse=True):
+            ws.delete_rows(row_i)
+
+        if rows_to_delete and ws.title != FENCERS_WORKSHEET:
+            recalculate_seeds(ws)
+
+    not_found = [n for n in names if normalize_name(n) not in {normalize_name(r) for r in removed}]
+    logger.info("Removed from sheets: %s; not found: %s", list(removed), not_found)
+    return {"removed": list(removed), "not_found": not_found}
 
 
 @observe(capture_input=False, capture_output=False)
@@ -283,6 +442,20 @@ def upload_results(
     """Upload enriched fencer data to the output Google Sheet."""
     if not config.output_sheet_url:
         raise ValueError("output_sheet_url is not set in user config — set it before uploading.")
+
+    # Filter out withdrawn fencers so re-running never re-adds them.
+    withdrawn = load_withdrawn(config.data_dir)
+    if withdrawn:
+        withdrawn_names = {w.name.lower() for w in withdrawn}
+        withdrawn_ids = {w.hr_id for w in withdrawn if w.hr_id is not None}
+        before = len(fencers)
+        fencers = [
+            f for f in fencers
+            if f.name.lower() not in withdrawn_names
+            and (f.hr_id is None or f.hr_id not in withdrawn_ids)
+        ]
+        logger.info("Skipped %d withdrawn fencer(s)", before - len(fencers))
+
     logger.info("Authorizing and opening output sheet ...")
     gc = gspread.service_account(filename=config.creds_path)
     sh = gc.open_by_url(config.output_sheet_url)
@@ -295,6 +468,7 @@ def upload_results(
     for discipline in config.disciplines:
         logger.info(f"Uploading {discipline} ...")
         upload_discipline(discipline, fencers, ratings, config, sh)
+        recalculate_seeds(sh.worksheet(discipline))
         logger.info(f"{discipline} done")
 
     logger.info("Upload complete")

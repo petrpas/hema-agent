@@ -1,5 +1,3 @@
-## 💰 Párování plateb
-
 Zde budu zpracovávat platby za startovné a ostatní věci (afterparty, půjčené zbraně apod.).
 
 **Jak na to:**
@@ -9,4 +7,6 @@ Zde budu zpracovávat platby za startovné a ostatní věci (afterparty, půjče
    - Pokud ho nahraješ znovu pod stejným názvem, původní verze bude přepsána.
 2. Jakmile jsi nahrál vše, napiš **„párovat"** — provedu párování plateb s registracemi.
 3. Zkontroluj výsledek. Pokud něco nesedí, napiš nápovědu (např. „řádek 8 je Novák, ne Nováková").
-4. Až bude vše v pořádku, napiš **„přijmout"** — vyplním příslušný sloupec ve výstupní tabulce.
+4. Až bude vše v pořádku, napiš **„zapiš"** nebo **„ok"** — vyplním příslušný sloupec ve výstupní tabulce.
+
+Kdykoli se sem můžeš vrátit, nahrát další výpisy z účtu a párování spustit znovu.

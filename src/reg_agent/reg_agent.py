@@ -100,7 +100,10 @@ _THREAD_NAMES = {
 }
 
 _PAYMENTS_THREAD_PREFIX = "💰"
-_PAYMENTS_THREAD_NAME = "💰 Payments"
+_PAYMENTS_THREAD_NAMES = {
+    "EN": "💰 Payments",
+    "CS": "💰 Platby",
+}
 
 _TYPST_THREAD_PREFIX = "📸"
 _TYPST_THREAD_NAMES = {
@@ -195,10 +198,11 @@ async def _find_payments_thread(channel: discord.TextChannel) -> discord.Thread 
 async def _create_payments_thread(channel: discord.TextChannel, lang: str = "EN") -> discord.Thread | None:
     """Create the payments thread and post the intro message."""
     try:
+        thread_name = _PAYMENTS_THREAD_NAMES.get(lang, _PAYMENTS_THREAD_NAMES["EN"])
         intro = PAYMENTS_THREAD_INTRO.get(lang, PAYMENTS_THREAD_INTRO["EN"])
-        anchor = await channel.send(_PAYMENTS_THREAD_NAME)
+        anchor = await channel.send(thread_name)
         thread = await anchor.create_thread(
-            name=_PAYMENTS_THREAD_NAME,
+            name=thread_name,
             auto_archive_duration=1440,
         )
         await thread.send(intro)
@@ -554,6 +558,61 @@ async def tool_match_fencers(ctx: RunContext[AgentDeps]) -> str:
         result += f" Unmatched: {', '.join(unmatched_names)}."
     result += " Thread tag: step3-match"
     return result
+
+
+@registration_agent.tool
+def tool_search_hr_profile(ctx: RunContext[AgentDeps], name: str) -> str:
+    """Search the local HEMA Ratings fighters list for profiles matching a name.
+
+    Uses diacritic-insensitive fuzzy matching — useful when the registered name
+    differs from the HEMA Ratings profile name (e.g. missing diacritics, typos).
+    Returns up to 10 closest matches with hr_id, name, nationality, and club.
+    The fighters list must have been downloaded during step 3.
+    """
+    import difflib as _difflib
+    try:
+        fighters_text = _get_fighters_compact(ctx.deps.config.data_dir)
+    except Exception as e:
+        return f"error loading fighters list: {e}"
+
+    index: list[tuple[str, str]] = []  # (normalized_name, original_line)
+    for line in fighters_text.splitlines():
+        parts = line.split(";", 3)
+        if len(parts) >= 2:
+            index.append((_normalize(parts[1]), line))
+
+    query = _normalize(name)
+    all_norms = [item[0] for item in index]
+    close = _difflib.get_close_matches(query, all_norms, n=10, cutoff=0.5)
+
+    # Also include any line where the last token of the query appears in the name
+    tokens = query.split()
+    if tokens:
+        surname = tokens[-1]
+        close_set = set(close)
+        for norm, line in index:
+            if surname in norm and norm not in close_set:
+                close.append(norm)
+                if len(close) >= 10:
+                    break
+
+    if not close:
+        return f"No profiles found matching '{name}'."
+
+    results = []
+    seen: set[str] = set()
+    for norm_name in close[:10]:
+        for n, line in index:
+            if n == norm_name and line not in seen:
+                seen.add(line)
+                parts = line.split(";", 3)
+                hr_id, hr_name = parts[0], parts[1]
+                nat = parts[2] if len(parts) > 2 else ""
+                club = parts[3] if len(parts) > 3 else ""
+                results.append(f"hr_id={hr_id}  {hr_name}  [{nat}]  {club}")
+                break
+
+    return "\n".join(results)
 
 
 @registration_agent.tool
@@ -1179,7 +1238,7 @@ async def tool_open_payments_thread(ctx: RunContext[AgentDeps]) -> str:
     if thread is None:
         thread = await _create_payments_thread(channel, lang)
     if thread is None:
-        return "Could not create the 💰 Payments thread — check bot permissions."
+        return "Could not create the payments thread — check bot permissions."
     return f"<#{thread.id}>"
 
 
@@ -1329,6 +1388,7 @@ async def tool_write_payments(ctx: RunContext[AgentDeps]) -> str:
             f"✅ Wrote payments for {len(written)} fencer(s): {', '.join(written)}."
             + (f"\n⚠️ {skip_count} possible match(es) skipped — re-run with hints or fix manually." if skip_count else "")
             + (f"\n❓ Not found in sheet: {', '.join(not_found)}." if not_found else "")
+            + f"\n\n➡️ Continue in <#{ctx.deps.channel.id}>"
         )
         await send_long(thread, msg)
 

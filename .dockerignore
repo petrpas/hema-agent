@@ -5,7 +5,7 @@
 data/
 discord.log
 tmp.txt
-src/creds.json
+src/_creds.json
 src/config/user_config.json
 **/__pycache__/
 **/*.pyc

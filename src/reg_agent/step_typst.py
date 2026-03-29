@@ -104,6 +104,20 @@ def _fmt_number(s: str) -> str:
     return f"{n:,}".replace(",", _NNBSP)
 
 
+def _paid_yn(s: str) -> str:
+    """Convert a payment value to 'Yes' or 'No'.
+
+    'Yes' if the value is a positive number; 'No' otherwise.
+    """
+    stripped = s.strip().replace("\u202f", "").replace(",", ".").replace("\xa0", "")
+    if not stripped:
+        return "No"
+    try:
+        return "Yes" if float(stripped) > 0 else "No"
+    except ValueError:
+        return "No"
+
+
 def _escape_typst(s: str) -> str:
     """Escape a value for use inside a Typst double-quoted string."""
     return s.replace("\\", "\\\\").replace('"', '\\"').replace("#", "\\#")
@@ -152,7 +166,7 @@ def _render_fencers_source(
             _col(row, _F_CLUB),
             _fmt_number(_col(row, _F_HRID)),
             _col(row, _F_DISC),
-            _col(row, _F_PAID),
+            _paid_yn(_col(row, _F_PAID)),
         ])
     return (
         template
@@ -198,7 +212,7 @@ def _render_discipline_source(
             _col(row, _D_CLUB),
             _fmt_number(_col(row, _D_HRID)),
             _fmt_number(_col(row, rank_idx)),
-            paid.get(name, ""),
+            _paid_yn(paid.get(name, "")),
         ])
     n = len(data_rows)
     last_in = min(n, limit) if limit is not None else n

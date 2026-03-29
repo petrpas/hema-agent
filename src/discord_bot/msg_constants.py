@@ -5,6 +5,7 @@ APP_NAME = "HEMA Squire"
 SETUP_CHANEL_NAME = "hsq-setup"
 REGISTRATION_CHANEL_NAME = "hsq-registrations"
 TOURNAMENT_INPUT_CHANNEL = "hsq-results-upload"
+POOLS_CHANNEL_NAME = "hsq-pools-alchemy"
 
 SETUP_WELCOME = read_msg("setup_welcome")
 SETUP_INFO    = {lang: read_msg("setup_info", lang) for lang in ("EN", "CS")}

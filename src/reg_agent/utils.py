@@ -62,7 +62,10 @@ def to_nat_code(nat: str | None) -> str | None:
         return None
     return _NATIONALITY_CODES.get(nat.strip(), nat.strip())
 
-from pydantic import RootModel
+import unicodedata
+from difflib import SequenceMatcher
+
+from pydantic import BaseModel, RootModel
 
 from models import FencerRecord, FencerRating
 
@@ -106,3 +109,55 @@ def save_ratings(ratings: RatingsDict, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(RatingsCache(root=ratings).model_dump_json(indent=4))
     logger.info(f"Saved ratings → {path.name}")
+
+
+# ── Withdrawn fencers ─────────────────────────────────────────────────────────
+
+WITHDRAWN_FILE = "withdrawn.json"
+
+
+class WithdrawnEntry(BaseModel):
+    name: str
+    hr_id: int | None = None
+
+
+class WithdrawnList(RootModel):
+    root: list[WithdrawnEntry] = []
+
+
+def load_withdrawn(data_dir: Path) -> list[WithdrawnEntry]:
+    path = data_dir / WITHDRAWN_FILE
+    if not path.exists():
+        return []
+    return WithdrawnList.model_validate_json(path.read_text()).root
+
+
+def save_withdrawn(entries: list[WithdrawnEntry], data_dir: Path) -> None:
+    path = data_dir / WITHDRAWN_FILE
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(WithdrawnList(root=entries).model_dump_json(indent=2))
+    logger.info("Saved %d withdrawn fencer(s) → %s", len(entries), path.name)
+
+
+# ── Fuzzy name matching ───────────────────────────────────────────────────────
+
+def normalize_name(s: str) -> str:
+    """Lowercase and strip diacritics for comparison (e.g. 'Böhm' → 'bohm')."""
+    return unicodedata.normalize("NFD", s.lower()).encode("ascii", "ignore").decode()
+
+
+def fuzzy_match_fencers(query: str, fencers: list[FencerRecord], threshold: float = 0.6) -> list[FencerRecord]:
+    """Return fencers whose names closely match the query string.
+
+    Comparison is diacritic-insensitive, so 'Bohm' matches 'Böhm' and
+    a surname-only query like 'Medvid' matches 'Miroslav Medvid'.
+    """
+    q = normalize_name(query)
+    results = []
+    for f in fencers:
+        n = normalize_name(f.name)
+        if q in n or n in q:
+            results.append(f)
+        elif SequenceMatcher(None, q, n).ratio() >= threshold:
+            results.append(f)
+    return results

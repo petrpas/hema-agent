@@ -14,6 +14,6 @@
     "creds_path": "src/creds.json",
     "data_root_dir": "data",
     "batch_sleep": 2,
-    "output_template": "https://docs.google.com/spreadsheets/d/1UMUxRfHnk5nOLY5D4oie2fos_oGUGf70MOH0xqwMaxU/edit?usp=sharing"
+    "drive_folder_url": "https://drive.google.com/drive/folders/1wU7UOTlFQsqNkahApymcnW-PToAPbqoD?usp=sharing"
   }
 }
