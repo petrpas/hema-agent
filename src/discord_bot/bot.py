@@ -12,7 +12,7 @@ import os
 import sys
 from pathlib import Path
 
-from discord_bot.msg_constants import REGISTRATION_CHANEL_NAME, SETUP_CHANEL_NAME, SETUP_WELCOME
+from discord_bot.msg_constants import REGISTRATION_CHANEL_NAME, SETUP_CHANEL_NAME, SETUP_WELCOME, POOLS_CHANNEL_NAME
 
 # Make reg_agent importable when bot.py is run directly from src/discord/
 _SRC = Path(__file__).parent.parent
@@ -28,6 +28,7 @@ from reg_agent.reg_agent import run_agent, _PAYMENTS_THREAD_PREFIX
 from reg_agent.step1_download import save_registration_csv
 from reg_agent.step7_payments import parse_and_store, load_all_parsed
 from setup_agent.setup_agent import run_setup_agent
+from pool_alch_agent.pool_alch_agent import run_pool_alch_agent
 from config import load_config, RegConfig
 
 log = logging.getLogger(__name__)
@@ -61,6 +62,7 @@ class HemaTournamentBot(commands.Bot):
         await self.add_cog(GeneralCog(self))
         await self.add_cog(SetupCog(self))
         await self.add_cog(RegistrationCog(self))
+        await self.add_cog(PoolsCog(self))
 
     async def on_ready(self) -> None:
         assert self.user is not None
@@ -385,6 +387,49 @@ class RegistrationCog(commands.Cog):
             interaction.channel,  # type: ignore[arg-type]
             f"{interaction.user.display_name} used /status — summarise the current pipeline state without running any steps.",
         )
+
+
+class PoolsCog(commands.Cog):
+    """Handles the #hsq-pools-alchemy channel — delegates to the pool_alch_agent."""
+
+    _running: set[int] = set()
+
+    def __init__(self, bot: HemaTournamentBot) -> None:
+        self.bot = bot
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        if message.author == self.bot.user:
+            return
+        if not isinstance(message.channel, discord.TextChannel):
+            return
+        if message.channel.name != POOLS_CHANNEL_NAME:
+            return
+        if message.content.startswith("/"):
+            return
+
+        if self.bot.config is None:
+            user_config_path = os.environ.get("USER_CONFIG")
+            try:
+                self.bot.config = load_config(user_config_path)
+            except Exception:
+                await message.channel.send(
+                    "⚠ No tournament config loaded. Set `USER_CONFIG` env var and restart the bot."
+                )
+                return
+
+        config = self.bot.config
+        assert config is not None
+        if message.channel.id in self._running:
+            await message.channel.send("⏳ Already processing — please wait.")
+            return
+
+        self._running.add(message.channel.id)
+        try:
+            async with message.channel.typing():
+                await run_pool_alch_agent(message.channel, message.content, config)
+        finally:
+            self._running.discard(message.channel.id)
 
 
 _lock_fh = None  # module-level so it stays alive (GC would release it)

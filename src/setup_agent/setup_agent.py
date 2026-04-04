@@ -96,9 +96,9 @@ def _update_user_config(path: Path, updates: dict) -> None:
 
 @setup_agent.system_prompt
 def _system_prompt(ctx: RunContext[SetupDeps]) -> str:
-    return _render_msg("setup_agent_system_prompt", {
-        "discipline_reference": _read_msg("setup_agent_discipline_reference"),
-        "discipline_table": _read_msg("setup_discipline_table", _memory_language(ctx.deps.memory_path)),
+    return _render_msg("setup/system_prompt", {
+        "discipline_reference": _read_msg("setup/discipline_reference"),
+        "discipline_table": _read_msg("setup/discipline_table", _memory_language(ctx.deps.memory_path)),
         "memory": _read_memory(ctx.deps.memory_path),
         "supported_languages": ", ".join(SETUP_INFO.keys()),
         "registration_channel": REGISTRATION_CHANEL_NAME,

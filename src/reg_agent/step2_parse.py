@@ -35,7 +35,7 @@ def _call_llm(df: pd.DataFrame, config: RegConfig) -> list[FencerRecord]:
         model=config.model(Step.PARSE),
         model_settings=ModelSettings(temperature=0.0),
         output_type=FencersBatch,
-        system_prompt=render_msg("step2_system_prompt", {"disciplines": json.dumps(config.disciplines)}),
+        system_prompt=render_msg("reg/step2_system_prompt", {"disciplines": json.dumps(config.disciplines)}),
         retries=3,
     )
 

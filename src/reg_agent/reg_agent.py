@@ -137,9 +137,9 @@ registration_agent = Agent(
 def _system_prompt(ctx: RunContext[AgentDeps]) -> str:
     lang = ctx.deps.config.language
     bot_email = _bot_email(ctx.deps.config)
-    sheet_access = _render_msg("sheet_access_request", {"bot_email": bot_email}, lang)
-    reg_complete = _read_msg("reg_complete", lang)  # contains <<CHANNEL>> placeholder
-    return _render_msg("reg_agent_system_prompt", {
+    sheet_access = _render_msg("shared/sheet_access_request", {"bot_email": bot_email}, lang)
+    reg_complete = _read_msg("reg/complete", lang)  # contains <<CHANNEL>> placeholder
+    return _render_msg("reg/system_prompt", {
         "tournament_name": ctx.deps.config.tournament_name,
         "sheet_access_request": sheet_access,
         "reg_complete": reg_complete,
@@ -941,7 +941,7 @@ async def tool_init_fencers_sheet(ctx: RunContext[AgentDeps]) -> str:
             log.error("setup_output_sheet failed: %s", e, exc_info=True)
             return f"error creating output sheet: {e}"
         await ctx.deps.channel.send(
-            _render_msg("sheet_clone_request", {"url": url, "bot_email": bot_email}, lang)
+            _render_msg("shared/sheet_clone_request", {"url": url, "bot_email": bot_email}, lang)
         )
         return (
             f"Output sheet created at {url}. "
