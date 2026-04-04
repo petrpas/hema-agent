@@ -31,7 +31,7 @@ from pydantic_ai.exceptions import ModelHTTPError
 
 langfuse = get_langfuse_client()
 
-from config import RegConfig, RegUserConfig, save_config
+from config import RegConfig, RegUserConfig, load_config, save_config
 from discord_bot.discord_utils import send_long
 from models import FencerRecord
 from discord_bot.msg_constants import PAYMENTS_THREAD_INTRO, POOLS_CHANNEL_NAME
@@ -1435,8 +1435,12 @@ async def tool_generate_social_media_list(ctx: RunContext[AgentDeps]) -> str:
     Requires the output sheet to be set and accessible (steps 1-6 complete).
     """
     try:
+        # Reload config from disk so discipline_limits updated by setup agent are reflected
+        user_config_path = os.environ.get("USER_CONFIG")
+        fresh_config = load_config(user_config_path)
+        ctx.deps.config = fresh_config
         png_paths = await asyncio.get_event_loop().run_in_executor(
-            None, _render_all, ctx.deps.config
+            None, _render_all, fresh_config
         )
     except ValueError as e:
         return f"error: {e}"

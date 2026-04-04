@@ -34,7 +34,7 @@ def merge_group(records: list[FencerRecord], config: RegConfig, hint: str | None
         model=config.model(Step.DEDUP),
         model_settings=ModelSettings(temperature=0.0),
         output_type=FencerMergeResult,
-        system_prompt=render_msg("step4_system_prompt", {"language": config.language}),
+        system_prompt=render_msg("reg/step4_system_prompt", {"language": config.language}),
         retries=3,
     )
     sorted_records = sorted(records, key=lambda r: r.registration_time)
@@ -59,7 +59,7 @@ def find_no_id_duplicates_llm(
         model=config.model(Step.DEDUP),
         model_settings=ModelSettings(temperature=0.0),
         output_type=NoIdDuplicateGroups,
-        system_prompt=render_msg("step4_no_id_dup_system_prompt", {"language": config.language}),
+        system_prompt=render_msg("reg/step4_no_id_dup_system_prompt", {"language": config.language}),
         retries=3,
     )
     fencer_data = [

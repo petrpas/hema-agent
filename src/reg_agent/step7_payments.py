@@ -79,7 +79,7 @@ def parse_transactions(raw_content: str, config: RegConfig) -> list[ParsedTransa
         model=config.model(Step.PAYMENTS_PARSE),
         model_settings=ModelSettings(temperature=0.0),
         output_type=ParsedTransactionList,
-        system_prompt=read_msg("step7_parse_system"),
+        system_prompt=read_msg("reg/step7_parse_system"),
         retries=3,
     )
     result = agent.run_sync(raw_content)
@@ -103,7 +103,7 @@ def match_payments(
         model=config.model(Step.PAYMENTS_MATCH),
         model_settings=ModelSettings(temperature=0.0),
         output_type=PaymentsResult,
-        system_prompt=render_msg("step7_match_system", {"fencer_summaries": summary_lines, "hints": hints}),
+        system_prompt=render_msg("reg/step7_match_system", {"fencer_summaries": summary_lines, "hints": hints}),
         retries=3,
     )
     txn_json = json.dumps([t.model_dump() for t in transactions], ensure_ascii=False, indent=2)

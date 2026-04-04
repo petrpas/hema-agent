@@ -158,8 +158,8 @@ def update_sheet_agent_run(
 
 
 def upload_fencers(fencers: list[FencerRecord], config: RegConfig, sh: gspread.Spreadsheet):
-    fencers_prompt = render_msg("step6_fencers_prompt", {})
-    system_prompt = render_msg("step6_system_prompt", {"specific_task": fencers_prompt})
+    fencers_prompt = render_msg("reg/step6_fencers_prompt", {})
+    system_prompt = render_msg("reg/step6_system_prompt", {"specific_task": fencers_prompt})
     data_prompt = _list_fencers(fencers)
     worksheet_name = FENCERS_WORKSHEET
 
@@ -180,8 +180,8 @@ def upload_discipline(discipline_code: str, fencers: list[FencerRecord], ratings
             )
         sh.duplicate_sheet(existing_discipline.id, new_sheet_name=discipline_code)
 
-    discipline_prompt = render_msg("step6_discipline_prompt", {"discipline": discipline_code})
-    system_prompt = render_msg("step6_system_prompt", {"specific_task": discipline_prompt})
+    discipline_prompt = render_msg("reg/step6_discipline_prompt", {"discipline": discipline_code})
+    system_prompt = render_msg("reg/step6_system_prompt", {"specific_task": discipline_prompt})
     data_prompt = _build_data_prompt(discipline_code, fencers, ratings)
 
     update_sheet_agent_run(config, sh, discipline_code, system_prompt, data_prompt)
@@ -278,7 +278,7 @@ def recalculate_seeds(ws: gspread.Worksheet) -> None:
                 return i + 1  # 1-based
         return None
 
-    no_col = _find("No.")
+    name_col = _find("Name")
     hrank_col = _find("HRank")
     if hrank_col is None:
         logger.warning("HRank column not found in '%s' — skipping seed calculation", ws.title)
@@ -299,8 +299,8 @@ def recalculate_seeds(ws: gspread.Worksheet) -> None:
     unranked: list[int] = []             # row_idx
 
     for i, row in enumerate(all_values[1:], 1):
-        no_val = row[no_col - 1].strip() if no_col and len(row) >= no_col else ""
-        if not no_val:
+        name_val = row[name_col - 1].strip() if name_col and len(row) >= name_col else ""
+        if not name_val:
             continue
         hrank_val = row[hrank_col - 1].strip() if len(row) >= hrank_col else ""
         try:

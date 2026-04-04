@@ -12,7 +12,6 @@ Flow:
 
 import asyncio
 import logging
-import math
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,6 +31,8 @@ from pool_alch_agent.loader import load_discipline
 from pool_alch_agent.models import Assignment, PoolConfig, PoolFencer, Score, Weights
 from pool_alch_agent.validator import validate
 from pool_alch_agent.solver import solve, score as compute_score
+from pool_alch_agent.state import save_state
+from pool_alch_agent.writer import write_pools_sheet
 
 log = logging.getLogger(__name__)
 
@@ -101,29 +102,35 @@ async def tool_load(ctx: RunContext[PoolAlchDeps], discipline_code: str) -> str:
         deps.validated = True
         lines.append("\nValidation passed.")
 
+    save_state(deps)
     return "\n".join(lines)
 
 
 @pool_alch_agent.tool
-def tool_set_pool_config(ctx: RunContext[PoolAlchDeps], num_pools: int, num_waves: int) -> str:
-    """Set number of pools and waves. Re-validates current fencer data against new config."""
+def tool_set_pool_config(ctx: RunContext[PoolAlchDeps], num_pools: int, wave_sizes: list[int]) -> str:
+    """Set number of pools and wave layout.
+
+    wave_sizes is a list of pool counts per wave, e.g. [3, 3, 2, 2] for 10 pools in 4 waves.
+    Must sum to num_pools.
+    """
     deps = ctx.deps
-    deps.pool_config = PoolConfig(num_pools=num_pools, num_waves=num_waves)
+    deps.pool_config = PoolConfig(num_pools=num_pools, wave_sizes=wave_sizes)
     deps.assignment = None
     deps.last_score = None
 
     if not deps.fencers:
-        return f"Pool config set: {num_pools} pools, {num_waves} waves. Load fencers first."
+        return f"Pool config set: {num_pools} pools, waves={wave_sizes}. Load fencers first."
 
     issues = validate(deps.fencers, deps.pool_config)
     deps.validated = not bool(issues)
 
-    result = f"Pool config set: {num_pools} pools, {num_waves} waves."
+    result = f"Pool config set: {num_pools} pools, waves={wave_sizes}."
     if issues:
         result += f"\n{len(issues)} validation issue(s) with this config:\n"
         result += "\n".join(f"  - {i}" for i in issues)
     else:
         result += " Validation passed."
+    save_state(deps)
     return result
 
 
@@ -147,6 +154,7 @@ def tool_set_weights(
         w.wave = wave
     ctx.deps.assignment = None  # invalidate current assignment
     ctx.deps.last_score = None
+    save_state(ctx.deps)
     return (
         f"Weights updated: snake={w.snake_deviation}, club={w.club}, "
         f"nationality={w.nationality}, wave={w.wave}"
@@ -169,6 +177,7 @@ async def tool_run_solver(ctx: RunContext[PoolAlchDeps]) -> str:
     )
     deps.assignment = assignment
     deps.last_score = s
+    save_state(deps)
     return f"Solver done. Score: {s}"
 
 
@@ -180,11 +189,10 @@ def tool_get_assignment(ctx: RunContext[PoolAlchDeps]) -> str:
         return "No assignment yet — call tool_run_solver first."
 
     config = deps.pool_config
-    pools_per_wave = math.ceil(config.num_pools / config.num_waves) if config else 1
     lines = []
 
     for pool_idx, pool in enumerate(deps.assignment):
-        wave = pool_idx // pools_per_wave + 1
+        wave = (config.wave_of_pool(pool_idx) + 1) if config else 1
         lines.append(f"\n**Pool {pool_idx + 1}** (wave {wave}) — {len(pool)} fencers")
         sorted_pool = sorted(pool, key=lambda f: f.seed)
         for f in sorted_pool:
@@ -234,10 +242,46 @@ def tool_swap_fencers(ctx: RunContext[PoolAlchDeps], name_a: str, name_b: str) -
     if deps.pool_config:
         deps.last_score = compute_score(deps.assignment, deps.weights, deps.pool_config)
 
+    save_state(deps)
     return (
         f"Swapped {fa.name} (pool {pa + 1}) ↔ {fb.name} (pool {pb + 1}). "
         f"New score: {deps.last_score}"
     )
+
+
+@pool_alch_agent.tool
+async def tool_write_to_sheet(ctx: RunContext[PoolAlchDeps]) -> str:
+    """Write the approved pool assignment to a new '{discipline}_Pools' worksheet.
+
+    Section 1 (cols A-G): fencer list sorted by seed.
+    Section 2 (col J+): pool assignment table, one wave block per wave.
+    Call only when the organiser has approved the assignment.
+    """
+    deps = ctx.deps
+    if deps.assignment is None:
+        return "error: no assignment — run solver first."
+    if not deps.current_discipline:
+        return "error: no discipline loaded."
+    if deps.pool_config is None:
+        return "error: pool config not set."
+
+    try:
+        url, warnings = await asyncio.to_thread(
+            write_pools_sheet,
+            deps.config,
+            deps.current_discipline,
+            deps.fencers,
+            deps.assignment,
+            deps.pool_config,
+        )
+    except Exception as e:
+        return f"error writing sheet: {e}"
+
+    lines = [f"Written to sheet: {url}"]
+    if warnings:
+        lines.append(f"\nWarnings ({len(warnings)}):")
+        lines.extend(f"  - {w}" for w in warnings)
+    return "\n".join(lines)
 
 
 # ── History + run ──────────────────────────────────────────────────────────────
@@ -263,9 +307,13 @@ async def run_pool_alch_agent(
     channel: discord.TextChannel,
     new_message_content: str,
     config: RegConfig,
+    deps: PoolAlchDeps | None = None,
 ) -> None:
     """Run one agent turn in the pools alchemy channel."""
-    deps = PoolAlchDeps(channel=channel, config=config)
+    if deps is None:
+        deps = PoolAlchDeps(channel=channel, config=config)
+    else:
+        deps.channel = channel  # refresh in case of reconnect
     prompt = await _build_prompt(channel, new_message_content)
 
     try:

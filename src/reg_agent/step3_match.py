@@ -25,7 +25,7 @@ MATCH_CORRECTIONS_FILE = "match_corrections.json"
 
 from msgs import read_msg as _read_msg
 
-SYSTEM_PROMPT = _read_msg("step3_system_prompt")
+SYSTEM_PROMPT = _read_msg("reg/step3_system_prompt")
 
 class FencerMatch(BaseModel):
     email: str
@@ -507,11 +507,11 @@ def _save_matched(fencers: list[FencerRecord], path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 _MATCH_TABLE_LEGEND = {
-    lang: _read_msg("match_table_legend", lang) for lang in ("EN", "CS")
+    lang: _read_msg("reg/match_table_legend", lang) for lang in ("EN", "CS")
 }
 
 _MATCH_TABLE_TEMPLATE = {
-    lang: {k: _read_msg(f"match_table_{k}", lang) for k in ("header", "confirmed", "found", "unmatched", "rejected")}
+    lang: {k: _read_msg(f"reg/match_table_{k}", lang) for k in ("header", "confirmed", "found", "unmatched", "rejected")}
     for lang in ("EN", "CS")
 }
 

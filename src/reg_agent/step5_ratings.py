@@ -30,7 +30,7 @@ RATING_HTML_DIR_PREFIX = "rating_html_"
 FIGHTER_HTML_PREFIX = "fighter_"
 RATINGS_CACHE_PREFIX = "ratings_"
 
-HEAL_SYSTEM_PROMPT = read_msg("step5_heal_system_prompt")
+HEAL_SYSTEM_PROMPT = read_msg("reg/step5_heal_system_prompt")
 
 
 class HealedParser(BaseModel):

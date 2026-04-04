@@ -2,11 +2,14 @@
 
 from pool_alch_agent.models import PoolFencer, PoolConfig, ValidationIssue
 
+_WARN_POOL_SIZE = 7    # warn if any pool exceeds this
+_MAX_POOL_SIZE  = 10   # hard maximum
+
 
 def validate(fencers: list[PoolFencer], config: PoolConfig) -> list[ValidationIssue]:
     issues: list[ValidationIssue] = []
 
-    # Missing names (should not happen after loader filters, but be safe)
+    # Missing names
     for f in fencers:
         if not f.name:
             issues.append(ValidationIssue(None, "name", "Fencer row has empty name"))
@@ -27,9 +30,22 @@ def validate(fencers: list[PoolFencer], config: PoolConfig) -> list[ValidationIs
         else:
             seen[f.seed] = f.name
 
+    # wave_sizes must sum to num_pools
+    p = config.num_pools
+    ws = config.wave_sizes
+    if not ws:
+        issues.append(ValidationIssue(None, "wave_sizes", "wave_sizes must not be empty"))
+    else:
+        if sum(ws) != p:
+            issues.append(ValidationIssue(
+                None, "wave_sizes",
+                f"wave_sizes {ws} sum to {sum(ws)} but num_pools is {p}"
+            ))
+        if any(s <= 0 for s in ws):
+            issues.append(ValidationIssue(None, "wave_sizes", "All wave sizes must be > 0"))
+
     # Fencer count vs pool count
     n = len(fencers)
-    p = config.num_pools
     if n < p:
         issues.append(ValidationIssue(
             None, "pool_count",
@@ -41,7 +57,21 @@ def validate(fencers: list[PoolFencer], config: PoolConfig) -> list[ValidationIs
             f"Only {n} fencers for {p} pools ({n // p}–{n % p or n // p} per pool) — pools will be very small"
         ))
 
-    # Club impossible constraint: club with more members than pools
+    # Pool size warnings (approximate — actual sizes depend on solver output)
+    if p > 0:
+        max_pool_size = -(-n // p)  # ceil division
+        if max_pool_size > _MAX_POOL_SIZE:
+            issues.append(ValidationIssue(
+                None, "pool_size",
+                f"Max pool size ~{max_pool_size} exceeds hard maximum of {_MAX_POOL_SIZE} — reduce pool count or accept fewer fencers"
+            ))
+        elif max_pool_size > _WARN_POOL_SIZE:
+            issues.append(ValidationIssue(
+                None, "pool_size",
+                f"Max pool size ~{max_pool_size} exceeds {_WARN_POOL_SIZE} — fencers will have many bouts ({max_pool_size - 1} each)"
+            ))
+
+    # Club impossible constraint
     club_counts: dict[str, list[str]] = {}
     for f in fencers:
         if f.club:
@@ -53,14 +83,5 @@ def validate(fencers: list[PoolFencer], config: PoolConfig) -> list[ValidationIs
                 f"Club '{club}' has {len(members)} fencers but only {p} pools — "
                 f"some pool will have multiple members ({', '.join(members)})"
             ))
-
-    # Num waves sanity
-    if config.num_waves < 1:
-        issues.append(ValidationIssue(None, "num_waves", "num_waves must be at least 1"))
-    elif config.num_waves > p:
-        issues.append(ValidationIssue(
-            None, "num_waves",
-            f"num_waves ({config.num_waves}) > num_pools ({p}) — every pool would be its own wave"
-        ))
 
     return issues

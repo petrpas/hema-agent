@@ -16,10 +16,12 @@ log = logging.getLogger(__name__)
 
 # Column indices in discipline worksheet (0-based), matching step6_upload._DISCIPLINE_HEADER
 # ["No.", "Name", "Nat.", "Club", "HR_ID", "HRating", "HRank"] + "Seed" appended by recalculate_seeds
-_COL_NAME  = 1
-_COL_NAT   = 2
-_COL_CLUB  = 3
-_COL_HRID  = 4
+_COL_NAME    = 1
+_COL_NAT     = 2
+_COL_CLUB    = 3
+_COL_HRID    = 4
+_COL_HRATING = 5
+_COL_HRANK   = 6
 
 
 def _col_index(header: list[str], name: str) -> int | None:
@@ -109,6 +111,18 @@ def load_discipline(
         except ValueError:
             hr_id = None
 
+        # HRating
+        try:
+            h_rating = float(_col(_COL_HRATING)) if _col(_COL_HRATING) else None
+        except ValueError:
+            h_rating = None
+
+        # HRank
+        try:
+            h_rank = int(_col(_COL_HRANK)) if _col(_COL_HRANK) else None
+        except ValueError:
+            h_rank = None
+
         fencers.append(PoolFencer(
             name=name,
             seed=seed,
@@ -116,6 +130,8 @@ def load_discipline(
             club=_col(_COL_CLUB) or None,
             hr_id=hr_id,
             other_disciplines=name_to_other.get(name, []),
+            h_rating=h_rating,
+            h_rank=h_rank,
         ))
 
     dual = sum(1 for f in fencers if f.other_disciplines)

@@ -28,7 +28,8 @@ from reg_agent.reg_agent import run_agent, _PAYMENTS_THREAD_PREFIX
 from reg_agent.step1_download import save_registration_csv
 from reg_agent.step7_payments import parse_and_store, load_all_parsed
 from setup_agent.setup_agent import run_setup_agent
-from pool_alch_agent.pool_alch_agent import run_pool_alch_agent
+from pool_alch_agent.pool_alch_agent import run_pool_alch_agent, PoolAlchDeps
+from pool_alch_agent.state import load_state, deps_from_state
 from config import load_config, RegConfig
 
 log = logging.getLogger(__name__)
@@ -393,9 +394,22 @@ class PoolsCog(commands.Cog):
     """Handles the #hsq-pools-alchemy channel — delegates to the pool_alch_agent."""
 
     _running: set[int] = set()
+    _deps: dict[int, PoolAlchDeps] = {}  # channel_id → persistent deps across turns
 
     def __init__(self, bot: HemaTournamentBot) -> None:
         self.bot = bot
+
+    def _get_deps(self, channel: discord.TextChannel, config) -> PoolAlchDeps:
+        """Return existing in-memory deps, or restore from disk, or create fresh."""
+        if channel.id in self._deps:
+            return self._deps[channel.id]
+        state = load_state(config)
+        if state is not None:
+            deps = deps_from_state(state, channel, config)
+        else:
+            deps = PoolAlchDeps(channel=channel, config=config)
+        self._deps[channel.id] = deps
+        return deps
 
     @commands.Cog.listener()
     async def on_message(self, message: discord.Message) -> None:
@@ -427,7 +441,8 @@ class PoolsCog(commands.Cog):
         self._running.add(message.channel.id)
         try:
             async with message.channel.typing():
-                await run_pool_alch_agent(message.channel, message.content, config)
+                deps = self._get_deps(message.channel, config)
+                await run_pool_alch_agent(message.channel, message.content, config, deps)
         finally:
             self._running.discard(message.channel.id)
 

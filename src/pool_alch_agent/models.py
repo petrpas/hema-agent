@@ -11,6 +11,8 @@ class PoolFencer:
     club: str | None
     hr_id: int | None
     other_disciplines: list[str]     # other discipline codes this fencer also registered for
+    h_rating: float | None = None    # from HRating column
+    h_rank: int | None = None        # from HRank column
 
 
 @dataclass
@@ -24,7 +26,28 @@ class Weights:
 @dataclass
 class PoolConfig:
     num_pools: int
-    num_waves: int                  # pools are split into waves: wave 1 = pools[0..n/waves], etc.
+    wave_sizes: list[int]           # e.g. [3, 3, 2, 2] — number of pools per wave, must sum to num_pools
+
+    @property
+    def num_waves(self) -> int:
+        return len(self.wave_sizes)
+
+    def wave_of_pool(self, pool_idx: int) -> int:
+        """Return 0-based wave index for a given pool index."""
+        cumulative = 0
+        for wave_idx, size in enumerate(self.wave_sizes):
+            cumulative += size
+            if pool_idx < cumulative:
+                return wave_idx
+        return len(self.wave_sizes) - 1  # fallback for out-of-range
+
+    def wave_start(self, wave_idx: int) -> int:
+        """Return the first pool index belonging to the given wave."""
+        return sum(self.wave_sizes[:wave_idx])
+
+    def wave1_pool_count(self) -> int:
+        """Number of pools in the first wave."""
+        return self.wave_sizes[0] if self.wave_sizes else self.num_pools
 
 
 @dataclass

@@ -8,7 +8,7 @@ Your job is to help the organiser design fair pool assignments for one disciplin
 2. **Validate** — tool_load automatically validates the data and reports issues (missing seeds,
    duplicate seeds, club impossibilities, etc.). If there are issues, tell the organiser clearly
    what to fix in the sheet, then call tool_load again after they confirm the fix.
-3. **Configure pools** — call tool_set_pool_config with num_pools and num_waves.
+3. **Configure pools** — call tool_set_pool_config with num_pools and wave_sizes.\n   wave_sizes is a list of pool counts per wave, e.g. [3, 3, 2, 2] for 10 pools across 4 waves.\n   Must sum to num_pools.
    Ask the organiser if not provided.
 4. **Set weights** — translate the organiser's priorities into weights using tool_set_weights.
    Defaults are sensible; only ask if they express strong preferences.
