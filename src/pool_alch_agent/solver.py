@@ -1,8 +1,14 @@
 """Pool assignment solver.
 
 Two phases:
-1. Construction — snake seeding + Hungarian optimal assignment within each rating window.
-2. Improvement  — hill-climbing pair swaps minimising the weighted score.
+1. Construction — snake seeding + Hungarian optimal assignment within each window.
+2. Improvement  — hill-climbing pair swaps within tier-based constraints.
+
+Seed tiers (1-based rows):
+  Row 1  (tier 0): pool heads — locked, never swapped.
+  Row 2  (tier 1): swap only within tier 1, penalty = snake distance.
+  Row 3–4 (tier 2): swap within tier 2, penalty = snake distance.
+  Row 5+  (tier 3): swap freely, zero snake penalty.
 """
 
 import logging
@@ -22,20 +28,61 @@ from pool_alch_agent.models import (
 
 log = logging.getLogger(__name__)
 
+# Number of rows (0-based) that form the protected tiers.
+# Row 0 = locked, row 1 = tier 1, rows 2-3 = tier 2, rows 4+ = free.
+_TIER_BOUNDARIES = (1, 2, 4)  # tier 0: [0,1), tier 1: [1,2), tier 2: [2,4), tier 3: [4,∞)
+
+
+def _domestic_nationality(fencers: list[PoolFencer]) -> str | None:
+    """Return the most frequent nationality (treated as domestic), or None if no nationalities."""
+    counts: Counter[str] = Counter(f.nationality for f in fencers if f.nationality)
+    return counts.most_common(1)[0][0] if counts else None
+
+
+def _is_foreign(fencer: PoolFencer, domestic: str | None) -> bool:
+    """A fencer is foreign if they have a nationality that differs from the domestic one."""
+    return bool(fencer.nationality and fencer.nationality != domestic)
+
+
+def _seed_tier(seed: int, num_pools: int) -> int:
+    """Return tier (0–3) for a fencer based on seed and pool count.
+
+    Tier is determined by which row the fencer occupies in ideal snake order.
+    """
+    row = (seed - 1) // num_pools  # 0-based row
+    if row < _TIER_BOUNDARIES[0]:
+        return 0
+    if row < _TIER_BOUNDARIES[1]:
+        return 1
+    if row < _TIER_BOUNDARIES[2]:
+        return 2
+    return 3
+
+
+def _snake_pos(pool: int, row: int, num_pools: int) -> int:
+    """Return the snake-order position (0-based) for a (pool, row) slot."""
+    if row % 2 == 0:
+        return row * num_pools + pool
+    return row * num_pools + (num_pools - 1 - pool)
+
 
 # ── Scoring ────────────────────────────────────────────────────────────────────
 
 def score(assignment: Assignment, weights: Weights, config: PoolConfig) -> Score:
-    # Snake deviation: preferred pool for each fencer given snake order by seed
-    all_fencers = [(f, pool_idx) for pool_idx, pool in enumerate(assignment) for f in pool]
-    sorted_by_seed = sorted(all_fencers, key=lambda x: x[0].seed)
     n = config.num_pools
+
+    # Snake deviation: measured as snake distance from preferred position.
+    # Only tiers 0–2 contribute; tier 3 (row 5+) has zero snake penalty.
     snake_dev = 0.0
-    for snake_pos, (fencer, actual_pool) in enumerate(sorted_by_seed):
-        window = snake_pos // n
-        pos_in_window = snake_pos % n
-        preferred_pool = pos_in_window if window % 2 == 0 else (n - 1 - pos_in_window)
-        snake_dev += abs(actual_pool - preferred_pool)
+    for pool_idx, pool in enumerate(assignment):
+        sorted_pool = sorted(pool, key=lambda f: f.seed)
+        for row, fencer in enumerate(sorted_pool):
+            tier = _seed_tier(fencer.seed, n)
+            if tier == 3:
+                continue
+            preferred = fencer.seed - 1  # ideal snake position
+            actual = _snake_pos(pool_idx, row, n)
+            snake_dev += abs(actual - preferred)
     snake_score = weights.snake_deviation * snake_dev
 
     # Club: count same-club pairs per pool
@@ -46,15 +93,29 @@ def score(assignment: Assignment, weights: Weights, config: PoolConfig) -> Score
             if count > 1:
                 club_score += weights.club * (count * (count - 1) / 2)
 
-    # Nationality: std dev of foreign fencer counts across pools
-    foreign_counts = [sum(1 for f in pool if f.nationality) for pool in assignment]
-    nat_score = weights.nationality * float(np.std(foreign_counts)) if foreign_counts else 0.0
+    # Nationality: penalise uneven distribution of foreign fencers as a whole
+    # and each foreign nationality individually, normalised so the total
+    # contribution is constant regardless of how many nationalities are present.
+    all_fencers = [f for pool in assignment for f in pool]
+    domestic = _domestic_nationality(all_fencers)
+    foreign_nats = {f.nationality for f in all_fencers if _is_foreign(f, domestic)}
+    num_nat_terms = 1 + len(foreign_nats)
+    term_weight = weights.nationality / num_nat_terms
+    nat_score = 0.0
+    # Total foreign distribution
+    foreign_counts = [sum(1 for f in pool if _is_foreign(f, domestic)) for pool in assignment]
+    nat_score += term_weight * float(np.std(foreign_counts))
+    # Per-nationality distribution
+    for nat in foreign_nats:
+        counts = [sum(1 for f in pool if f.nationality == nat) for pool in assignment]
+        nat_score += term_weight * float(np.std(counts))
 
-    # Wave: dual-discipline fencers not in wave 1
-    wave_score = 0.0
+    # Wave: count dual-discipline fencers in parallel waves (hard constraint — should be 0).
+    wave_violations = 0
     for pool_idx, pool in enumerate(assignment):
-        if config.wave_of_pool(pool_idx) != 0:
-            wave_score += weights.wave * sum(1 for f in pool if f.other_disciplines)
+        if config.is_parallel(config.wave_of_pool(pool_idx)):
+            wave_violations += sum(1 for f in pool if f.other_disciplines)
+    wave_score = weights.wave * wave_violations
 
     return Score(
         snake_deviation=snake_score,
@@ -73,32 +134,40 @@ def _build_window_cost(
     window_idx: int,
     weights: Weights,
     config: PoolConfig,
+    domestic: str | None,
+    num_nat_terms: int,
 ) -> np.ndarray:
     """Build cost matrix for assigning window_fencers (rows) to pools (cols)."""
     m = len(window_fencers)
     cost = np.zeros((m, n), dtype=float)
+    # Tiers 0–2 (rows 0–3) get snake penalty; tier 3 (row 4+) gets none.
+    use_snake = window_idx < _TIER_BOUNDARIES[2]
+    nat_weight = weights.nationality / num_nat_terms if num_nat_terms else 0.0
 
     for i, fencer in enumerate(window_fencers):
         pos_in_window = i
         preferred_pool = pos_in_window if window_idx % 2 == 0 else (n - 1 - pos_in_window)
 
         for j in range(n):
-            # Snake deviation
-            cost[i, j] += weights.snake_deviation * abs(j - preferred_pool)
+            # Snake deviation (flat weight for tiers 0–2, zero for tier 3)
+            if use_snake:
+                cost[i, j] += weights.snake_deviation * abs(j - preferred_pool)
 
             # Club penalty
             if fencer.club:
                 same_club = sum(1 for f in pools[j] if f.club == fencer.club)
                 cost[i, j] += weights.club * same_club
 
-            # Nationality penalty
-            if fencer.nationality:
-                foreign_in_j = sum(1 for f in pools[j] if f.nationality)
-                cost[i, j] += weights.nationality * foreign_in_j
+            # Nationality penalty: total foreign + same-nationality clustering
+            if _is_foreign(fencer, domestic):
+                foreign_in_j = sum(1 for f in pools[j] if _is_foreign(f, domestic))
+                cost[i, j] += nat_weight * foreign_in_j
+                same_nat_in_j = sum(1 for f in pools[j] if f.nationality == fencer.nationality)
+                cost[i, j] += nat_weight * same_nat_in_j
 
-            # Wave penalty: dual-discipline fencer assigned to non-wave-1 pool
-            if fencer.other_disciplines and config.wave_of_pool(j) != 0:
-                cost[i, j] += weights.wave
+            # Wave: dual-discipline fencer cannot be in a parallel wave (hard constraint)
+            if fencer.other_disciplines and config.is_parallel(config.wave_of_pool(j)):
+                cost[i, j] = np.inf
 
     return cost
 
@@ -111,13 +180,16 @@ def construct(
     """Build initial assignment using Hungarian optimal assignment within each snake window."""
     n = config.num_pools
     sorted_fencers = sorted(fencers, key=lambda f: f.seed)
+    domestic = _domestic_nationality(fencers)
+    foreign_nats = {f.nationality for f in fencers if _is_foreign(f, domestic)}
+    num_nat_terms = 1 + len(foreign_nats)
     pools: list[list[PoolFencer]] = [[] for _ in range(n)]
     windows = [sorted_fencers[i:i + n] for i in range(0, len(sorted_fencers), n)]
 
     for window_idx, window in enumerate(windows):
         if not window:
             continue
-        cost = _build_window_cost(window, pools, n, window_idx, weights, config)
+        cost = _build_window_cost(window, pools, n, window_idx, weights, config, domestic, num_nat_terms)
         row_ind, col_ind = linear_sum_assignment(cost)
         for r, c in zip(row_ind, col_ind):
             pools[c].append(window[r])
@@ -138,12 +210,13 @@ def improve(
     assignment: Assignment,
     weights: Weights,
     config: PoolConfig,
-    max_iterations: int = 10_000,
+    max_iterations: int = 500,
 ) -> tuple[Assignment, Score]:
-    """Hill-climbing: repeatedly apply the best-improving pair swap until local minimum."""
+    """Hill-climbing: repeatedly apply the best-improving pair swap within tier constraints."""
     import copy
     current = copy.deepcopy(assignment)
     current_score = score(current, weights, config)
+    n = config.num_pools
 
     for iteration in range(max_iterations):
         best_delta = 0.0
@@ -151,7 +224,25 @@ def improve(
 
         for pa, pb in combinations(range(len(current)), 2):
             for ia, fa in enumerate(current[pa]):
+                tier_a = _seed_tier(fa.seed, n)
+                if tier_a == 0:
+                    continue  # pool heads are locked
+
                 for ib, fb in enumerate(current[pb]):
+                    tier_b = _seed_tier(fb.seed, n)
+                    if tier_b == 0:
+                        continue
+
+                    # Tier constraint: fencers can only swap within the same tier
+                    if tier_a != tier_b:
+                        continue
+
+                    # Never move a dual fencer into a parallel wave
+                    if fa.other_disciplines and config.is_parallel(config.wave_of_pool(pb)):
+                        continue
+                    if fb.other_disciplines and config.is_parallel(config.wave_of_pool(pa)):
+                        continue
+
                     _swap(current, pa, ia, pb, ib)
                     new_score = score(current, weights, config)
                     delta = current_score.total - new_score.total
@@ -184,6 +275,14 @@ def solve(
     weights: Weights,
 ) -> tuple[Assignment, Score]:
     """Construct initial assignment, then improve with hill-climbing."""
+    if config.parallel_waves:
+        dual_count = sum(1 for f in fencers if f.other_disciplines)
+        non_parallel_pools = sum(
+            s for i, s in enumerate(config.wave_sizes) if i not in config.parallel_waves
+        )
+        log.info("Parallel waves=%s: %d dual fencers must fit in %d non-parallel pool(s)",
+                 config.parallel_waves, dual_count, non_parallel_pools)
+
     assignment = construct(fencers, config, weights)
     log.info("Construction complete, initial score=%s", score(assignment, weights, config))
     assignment, final_score = improve(assignment, weights, config)

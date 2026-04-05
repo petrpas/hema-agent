@@ -1,4 +1,5 @@
 {
+  "pool_alch_model": "anthropic:claude-sonnet-4-6",
   "reg_agent": {
     "ai_models": {
       "default": "anthropic:claude-sonnet-4-6",

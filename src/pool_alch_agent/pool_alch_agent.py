@@ -31,6 +31,7 @@ from pool_alch_agent.loader import load_discipline
 from pool_alch_agent.models import Assignment, PoolConfig, PoolFencer, Score, Weights
 from pool_alch_agent.validator import validate
 from pool_alch_agent.solver import solve, score as compute_score
+from pool_alch_agent.renderer import render_pools_png
 from pool_alch_agent.state import save_state
 from pool_alch_agent.writer import write_pools_sheet
 
@@ -51,6 +52,8 @@ class PoolAlchDeps:
     last_score: Score | None = None
     current_discipline: str | None = None
 
+
+_ALGORITHM_REF_PATH = Path(__file__).parent / "README.md"
 
 pool_alch_agent = Agent(
     "anthropic:claude-sonnet-4-6",
@@ -81,9 +84,7 @@ async def tool_load(ctx: RunContext[PoolAlchDeps], discipline_code: str) -> str:
     deps.assignment = None
     deps.last_score = None
 
-    # Validate — requires pool_config for some checks; use a placeholder if not set yet
-    pc = deps.pool_config or PoolConfig(num_pools=1, num_waves=1)
-    issues = validate(fencers, pc)
+    issues = validate(fencers, deps.pool_config)
 
     lines = [f"Loaded {len(fencers)} fencers for discipline '{discipline_code}'."]
 
@@ -107,24 +108,34 @@ async def tool_load(ctx: RunContext[PoolAlchDeps], discipline_code: str) -> str:
 
 
 @pool_alch_agent.tool
-def tool_set_pool_config(ctx: RunContext[PoolAlchDeps], num_pools: int, wave_sizes: list[int]) -> str:
-    """Set number of pools and wave layout.
+def tool_set_pool_config(
+    ctx: RunContext[PoolAlchDeps],
+    num_pools: int,
+    wave_sizes: list[int],
+    parallel_waves: list[int] | None = None,
+) -> str:
+    """Set number of pools, wave layout, and which waves run in parallel with other disciplines.
 
-    wave_sizes is a list of pool counts per wave, e.g. [3, 3, 2, 2] for 10 pools in 4 waves.
-    Must sum to num_pools.
+    wave_sizes: pool counts per wave, e.g. [3, 3, 2, 2] for 10 pools in 4 waves. Must sum to num_pools.
+    parallel_waves: 0-based wave indices where another discipline runs simultaneously.
+        Dual-discipline fencers will be kept out of these waves. Omit or pass [] for sequential tournaments.
     """
     deps = ctx.deps
-    deps.pool_config = PoolConfig(num_pools=num_pools, wave_sizes=wave_sizes)
+    deps.pool_config = PoolConfig(
+        num_pools=num_pools,
+        wave_sizes=wave_sizes,
+        parallel_waves=parallel_waves or [],
+    )
     deps.assignment = None
     deps.last_score = None
 
     if not deps.fencers:
-        return f"Pool config set: {num_pools} pools, waves={wave_sizes}. Load fencers first."
+        return f"Pool config set: {num_pools} pools, waves={wave_sizes}, parallel={parallel_waves or []}. Load fencers first."
 
     issues = validate(deps.fencers, deps.pool_config)
     deps.validated = not bool(issues)
 
-    result = f"Pool config set: {num_pools} pools, waves={wave_sizes}."
+    result = f"Pool config set: {num_pools} pools, waves={wave_sizes}, parallel={parallel_waves or []}."
     if issues:
         result += f"\n{len(issues)} validation issue(s) with this config:\n"
         result += "\n".join(f"  - {i}" for i in issues)
@@ -140,9 +151,11 @@ def tool_set_weights(
     snake_deviation: float | None = None,
     club: float | None = None,
     nationality: float | None = None,
-    wave: float | None = None,
 ) -> str:
-    """Update scoring weights. Only pass the weights you want to change."""
+    """Update scoring weights. Only pass the weights you want to change.
+
+    Wave placement for dual-discipline fencers is a hard constraint (not tuneable).
+    """
     w = ctx.deps.weights
     if snake_deviation is not None:
         w.snake_deviation = snake_deviation
@@ -150,8 +163,6 @@ def tool_set_weights(
         w.club = club
     if nationality is not None:
         w.nationality = nationality
-    if wave is not None:
-        w.wave = wave
     ctx.deps.assignment = None  # invalidate current assignment
     ctx.deps.last_score = None
     save_state(ctx.deps)
@@ -284,9 +295,58 @@ async def tool_write_to_sheet(ctx: RunContext[PoolAlchDeps]) -> str:
     return "\n".join(lines)
 
 
+@pool_alch_agent.tool
+async def tool_render_png(ctx: RunContext[PoolAlchDeps]) -> str:
+    """Render the current pool assignment as PNG image(s) and post them to the channel.
+
+    Requires an approved (or at least reviewed) assignment.
+    Call after tool_run_solver or tool_swap_fencers to share a visual overview.
+    """
+    deps = ctx.deps
+    if deps.assignment is None:
+        return "error: no assignment — run solver first."
+    if not deps.current_discipline:
+        return "error: no discipline loaded."
+    if deps.pool_config is None:
+        return "error: pool config not set."
+
+    try:
+        paths = await asyncio.to_thread(
+            render_pools_png,
+            deps.config,
+            deps.current_discipline,
+            deps.assignment,
+            deps.pool_config,
+        )
+    except Exception as e:
+        return f"error rendering PNG: {e}"
+
+    png_paths = [p for p in paths if p.suffix == ".png"]
+    if not png_paths:
+        return "error: no PNG output produced."
+
+    files = [discord.File(str(p)) for p in png_paths]
+    await deps.channel.send(files=files)
+    return f"Posted {len(png_paths)} PNG page(s)."
+
+
+@pool_alch_agent.tool
+def tool_explain_algorithm(ctx: RunContext[PoolAlchDeps]) -> str:
+    """Read the solver algorithm documentation. Call when the organiser asks how
+    the seeding, scoring, or optimisation works."""
+    readme = _ALGORITHM_REF_PATH.read_text(encoding="utf-8")
+    # Return only the algorithm section
+    parts = readme.split("## Solver algorithm", 1)
+    return parts[1] if len(parts) > 1 else readme
+
+
 # ── History + run ──────────────────────────────────────────────────────────────
 
-async def _build_prompt(channel: discord.TextChannel, new_message_content: str) -> str:
+async def _build_prompt(
+    channel: discord.TextChannel,
+    new_message_content: str,
+    config: RegConfig,
+) -> str:
     msgs: list[discord.Message] = []
     async for msg in channel.history(limit=MAX_HISTORY + 1):
         msgs.append(msg)
@@ -297,7 +357,13 @@ async def _build_prompt(channel: discord.TextChannel, new_message_content: str) 
         for msg in msgs
     ]
     history = "\n".join(lines) if lines else "(no prior messages)"
+
+    disciplines: dict[str, str] = getattr(config, "disciplines", {})
+    disc_lines = "\n".join(f"  {code}: {name}" for code, name in disciplines.items())
+    disc_block = f"[Available disciplines]\n{disc_lines}\n\n" if disc_lines else ""
+
     return (
+        f"{disc_block}"
         f"[Channel history — oldest first]\n{history}\n\n"
         f"[New message from organiser]\n{new_message_content}"
     )
@@ -314,10 +380,10 @@ async def run_pool_alch_agent(
         deps = PoolAlchDeps(channel=channel, config=config)
     else:
         deps.channel = channel  # refresh in case of reconnect
-    prompt = await _build_prompt(channel, new_message_content)
+    prompt = await _build_prompt(channel, new_message_content, config)
 
     try:
-        result = await pool_alch_agent.run(prompt, deps=deps)
+        result = await pool_alch_agent.run(prompt, deps=deps, model=config.pool_alch_model)
         output_str = result.output or ""
         log.info("PoolAlch agent result: %d chars, preview=%r", len(output_str), output_str[:200])
         if output_str.strip():

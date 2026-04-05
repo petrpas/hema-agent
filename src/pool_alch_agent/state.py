@@ -42,6 +42,7 @@ class _WeightsS(BaseModel):
 class _PoolConfigS(BaseModel):
     num_pools: int
     wave_sizes: list[int]
+    parallel_waves: list[int] = []
 
 
 class _ScoreS(BaseModel):

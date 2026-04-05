@@ -20,13 +20,17 @@ class Weights:
     snake_deviation: float = 1.0    # penalty per pool-step deviation from snake preferred position
     club: float = 10.0              # penalty per same-club pair in a pool
     nationality: float = 3.0       # penalty for uneven foreign-fencer distribution (std dev)
-    wave: float = 5.0              # penalty per dual-discipline fencer NOT in wave 1
+    wave: float = 5.0              # penalty per wave violation (hard constraint — should always be 0)
 
 
 @dataclass
 class PoolConfig:
     num_pools: int
     wave_sizes: list[int]           # e.g. [3, 3, 2, 2] — number of pools per wave, must sum to num_pools
+    parallel_waves: list[int] = field(default_factory=list)
+    # 0-based wave indices where other disciplines run simultaneously.
+    # Dual-discipline fencers must be kept OUT of these waves (they'd be
+    # fencing two disciplines at once). Empty = sequential / single-discipline.
 
     @property
     def num_waves(self) -> int:
@@ -41,13 +45,13 @@ class PoolConfig:
                 return wave_idx
         return len(self.wave_sizes) - 1  # fallback for out-of-range
 
+    def is_parallel(self, wave_idx: int) -> bool:
+        """True if this wave has other disciplines running alongside it."""
+        return wave_idx in self.parallel_waves
+
     def wave_start(self, wave_idx: int) -> int:
         """Return the first pool index belonging to the given wave."""
         return sum(self.wave_sizes[:wave_idx])
-
-    def wave1_pool_count(self) -> int:
-        """Number of pools in the first wave."""
-        return self.wave_sizes[0] if self.wave_sizes else self.num_pools
 
 
 @dataclass

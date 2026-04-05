@@ -63,6 +63,7 @@ class RegAgentSystemConfig(BaseModel):
 class AgentConfig(BaseModel):
     """Root model for agent_config.json — one section per module."""
     reg_agent: RegAgentSystemConfig = RegAgentSystemConfig()
+    pool_alch_model: str = "anthropic:claude-sonnet-4-6"
 
 
 # ── User config (user_config.json) ────────────────────────────────────────────
@@ -80,6 +81,7 @@ class RegUserConfig(BaseModel):
 
 class RegConfig(RegUserConfig, RegAgentSystemConfig):
     """Runtime config passed to all step functions — merges user + system settings."""
+    pool_alch_model: str = "anthropic:claude-sonnet-4-6"
 
     @computed_field
     @property
@@ -107,7 +109,9 @@ def load_config(
     with open(ucp) as f:
         user_data: dict = json.load(f)
 
-    system_data = load_agent_config(agent_config_path).reg_agent.model_dump()
+    agent_cfg = load_agent_config(agent_config_path)
+    system_data = agent_cfg.reg_agent.model_dump()
+    system_data["pool_alch_model"] = agent_cfg.pool_alch_model
     return RegConfig(**user_data, **system_data)
 
 

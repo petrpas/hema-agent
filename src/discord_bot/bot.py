@@ -12,7 +12,7 @@ import os
 import sys
 from pathlib import Path
 
-from discord_bot.msg_constants import REGISTRATION_CHANEL_NAME, SETUP_CHANEL_NAME, SETUP_WELCOME, POOLS_CHANNEL_NAME
+from discord_bot.msg_constants import REGISTRATION_CHANEL_NAME, SETUP_CHANEL_NAME, SETUP_WELCOME, POOLS_WELCOME, POOLS_CHANNEL_NAME
 
 # Make reg_agent importable when bot.py is run directly from src/discord/
 _SRC = Path(__file__).parent.parent
@@ -36,9 +36,10 @@ log = logging.getLogger(__name__)
 
 
 
-# channel name → welcome message posted on creation
-CHANNEL_WELCOMES: dict[str, str] = {
+# channel name → welcome message (plain str = language-independent, dict = keyed by lang code)
+CHANNEL_WELCOMES: dict[str, str | dict[str, str]] = {
     SETUP_CHANEL_NAME: SETUP_WELCOME,
+    POOLS_CHANNEL_NAME: POOLS_WELCOME,
 }
 
 
@@ -145,12 +146,15 @@ class GeneralCog(commands.Cog):
             await interaction.followup.send("Must be used inside a server.", ephemeral=True)
             return
 
+        lang = getattr(self.bot.config, "language", "EN") if self.bot.config else "EN"
+
         created: list[str] = []
         for ch_name, welcome_msg in CHANNEL_WELCOMES.items():
             existing = discord.utils.get(guild.text_channels, name=ch_name)
             if existing is None:
                 ch = await guild.create_text_channel(ch_name)
-                await ch.send(welcome_msg)
+                msg = welcome_msg[lang] if isinstance(welcome_msg, dict) else welcome_msg
+                await ch.send(msg)
                 created.append(ch_name)
                 log.info("Created #%s in %s", ch_name, guild)
             else:

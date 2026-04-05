@@ -6,7 +6,8 @@ _WARN_POOL_SIZE = 7    # warn if any pool exceeds this
 _MAX_POOL_SIZE  = 10   # hard maximum
 
 
-def validate(fencers: list[PoolFencer], config: PoolConfig) -> list[ValidationIssue]:
+def validate(fencers: list[PoolFencer], config: PoolConfig | None = None) -> list[ValidationIssue]:
+    """Validate fencer data and (if config is provided) pool layout constraints."""
     issues: list[ValidationIssue] = []
 
     # Missing names
@@ -29,6 +30,9 @@ def validate(fencers: list[PoolFencer], config: PoolConfig) -> list[ValidationIs
             ))
         else:
             seen[f.seed] = f.name
+
+    if config is None:
+        return issues
 
     # wave_sizes must sum to num_pools
     p = config.num_pools
@@ -83,5 +87,29 @@ def validate(fencers: list[PoolFencer], config: PoolConfig) -> list[ValidationIs
                 f"Club '{club}' has {len(members)} fencers but only {p} pools — "
                 f"some pool will have multiple members ({', '.join(members)})"
             ))
+
+    # Parallel wave capacity: non-parallel waves must have enough pools for all dual fencers
+    if config.parallel_waves:
+        dual_count = sum(1 for f in fencers if f.other_disciplines)
+        non_parallel_pools = sum(
+            s for i, s in enumerate(ws) if i not in config.parallel_waves
+        )
+        if dual_count > 0 and non_parallel_pools == 0:
+            issues.append(ValidationIssue(
+                None, "parallel_waves",
+                f"All waves are marked parallel but {dual_count} dual-discipline fencer(s) "
+                f"need at least one non-parallel wave"
+            ))
+        elif dual_count > 0:
+            max_capacity = max(
+                (s for i, s in enumerate(ws) if i not in config.parallel_waves),
+                default=0,
+            ) * _MAX_POOL_SIZE
+            if dual_count > max_capacity:
+                issues.append(ValidationIssue(
+                    None, "parallel_waves",
+                    f"{dual_count} dual-discipline fencers but non-parallel waves only have "
+                    f"{non_parallel_pools} pool(s) — may not fit all dual fencers"
+                ))
 
     return issues
