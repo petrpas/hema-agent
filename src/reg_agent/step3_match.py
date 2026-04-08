@@ -28,7 +28,8 @@ from msgs import read_msg as _read_msg
 SYSTEM_PROMPT = _read_msg("reg/step3_system_prompt")
 
 class FencerMatch(BaseModel):
-    email: str
+    name: str
+    club: str | None = None
     hr_id: int | None
     matched_name: str | None
     matched_club: str | None
@@ -207,18 +208,23 @@ def _prefilter_candidates(
     return "\n".join(candidate_lines)
 
 
+def _make_lookup_key(name: str, club: str | None) -> str:
+    """Build a stable lookup key from name + club."""
+    return f"{_normalize(name)}|{_normalize(club or '')}"
+
+
 def _call_llm(
     need_llm: list[FencerRecord],
     fighters_text: str,
     config: RegConfig,
     instructions: str | None = None,
 ) -> dict[str, dict]:
-    """Return match info keyed by email."""
+    """Return match info keyed by normalized name|club."""
     candidates_text = _prefilter_candidates(need_llm, fighters_text)
     logger.info(f"Sending {len(candidates_text.splitlines())} candidate fighters to LLM for {len(need_llm)} fencers ...")
 
     unmatched_text = "\n".join(
-        f"- email={f.email}, name={f.name}, club={f.club or ''}"
+        f"- name={f.name}, club={f.club or ''}"
         for f in need_llm
     )
     agent = Agent(
@@ -236,7 +242,7 @@ def _call_llm(
         user_prompt += f"\n\nAdditional organiser instructions:\n{instructions}"
     result = agent.run_sync(user_prompt)
     logger.info("LLM matching complete")
-    return {m.email: m.model_dump() for m in result.output.matches}
+    return {_make_lookup_key(m.name, m.club): m.model_dump() for m in result.output.matches}
 
 
 def load_corrections(data_dir: Path) -> dict[str, int | None]:
@@ -264,21 +270,6 @@ def _save_cache(cache: dict[str, CacheEntry], cache_path: Path) -> None:
     cache_path.write_bytes(_CACHE.dump_json(cache, indent=2))
 
 
-def _cache_lookup_by_email_and_name(cache: dict[str, CacheEntry], email: str, name: str) -> CacheEntry | None:
-    """Match only when both email and name agree — guards against one email registering multiple fencers."""
-    if not email or not name:
-        return None
-    email_lower = email.lower()
-    name_norm = _normalize(name)
-    for entry in cache.values():
-        if email_lower not in {e.lower() for e in entry.emails_used}:
-            continue
-        known_names = {entry.full_name} | set(entry.alternative_names_used)
-        if any(_normalize(n) == name_norm for n in known_names):
-            return entry
-    return None
-
-
 def _cache_lookup_by_name(cache: dict[str, CacheEntry], full_name: str) -> CacheEntry | None:
     name_norm = _normalize(full_name.strip())
     for entry in cache.values():
@@ -288,44 +279,25 @@ def _cache_lookup_by_name(cache: dict[str, CacheEntry], full_name: str) -> Cache
     return None
 
 
-def _email_owned_by_other(cache: dict[str, CacheEntry], email: str, exclude_key: str) -> bool:
-    """Return True if email already appears in a different cache entry (proxy registration guard)."""
-    email_lower = email.lower()
-    return any(
-        k != exclude_key and email_lower in {e.lower() for e in v.emails_used}
-        for k, v in cache.items()
-    )
-
-
 def _upsert_cache_entry(
     cache: dict[str, CacheEntry],
     hr_id: int,
     full_name: str,
     club: str,
-    email: str,
     nationality: str | None,
     alt_name: str | None,
 ) -> None:
     key = str(hr_id)
     if key not in cache:
-        owned_elsewhere = email and _email_owned_by_other(cache, email, key)
-        if owned_elsewhere:
-            logger.warning(f"Email {email} already owned by another entry — not adding to hr_id={hr_id} ({full_name})")
         cache[key] = CacheEntry(
             full_name=full_name,
             club=club,
             nationality=to_nat_code(nationality) or "",
             hr_id=hr_id,
-            emails_used=[email] if email and not owned_elsewhere else [],
             alternative_names_used=[alt_name] if alt_name else [],
         )
     else:
         entry = cache[key]
-        if email and email not in entry.emails_used:
-            if _email_owned_by_other(cache, email, key):
-                logger.warning(f"Email {email} already owned by another entry — not adding to hr_id={hr_id} ({full_name})")
-            else:
-                entry.emails_used.append(email)
         if alt_name and alt_name not in entry.alternative_names_used:
             entry.alternative_names_used.append(alt_name)
 
@@ -385,7 +357,6 @@ def match_fencers(
                 cache, fencer.hr_id,
                 hr_name or fencer.name,
                 hr_club or fencer.club or "",
-                fencer.email or "",
                 hr_nat or None,
                 fencer.name if hr_name and _normalize(fencer.name) != _normalize(hr_name) else None,
             )
@@ -395,7 +366,7 @@ def match_fencers(
             }))
             continue
 
-        entry = _cache_lookup_by_email_and_name(cache, fencer.email or "", fencer.name) or _cache_lookup_by_name(cache, fencer.name)
+        entry = _cache_lookup_by_name(cache, fencer.name)
         if entry:
             matched = fencer.model_copy(update={
                 "hr_id": entry.hr_id,
@@ -404,7 +375,7 @@ def match_fencers(
             })
             _upsert_cache_entry(
                 cache, entry.hr_id,
-                entry.full_name, entry.club, fencer.email or "",
+                entry.full_name, entry.club,
                 entry.nationality or None,
                 fencer.name if fencer.name != entry.full_name else None,
             )
@@ -416,12 +387,13 @@ def match_fencers(
 
     if need_llm:
         logger.info(f"LLM matching {len(need_llm)} unmatched fencers ...")
-        match_by_email = _call_llm(need_llm, fighters_text, config, instructions)
+        match_by_key = _call_llm(need_llm, fighters_text, config, instructions)
 
         for i, fencer in enumerate(updated_fencers):
             if fencer not in need_llm:
                 continue
-            m = match_by_email.get(fencer.email or "")
+            lookup = _make_lookup_key(fencer.name, fencer.club)
+            m = match_by_key.get(lookup)
             if m and m.get("hr_id"):
                 updated_fencers[i] = fencer.model_copy(update={
                     "hr_id": m["hr_id"],
@@ -432,7 +404,6 @@ def match_fencers(
                     cache, m["hr_id"],
                     m.get("matched_name") or fencer.name,
                     m.get("matched_club") or fencer.club or "",
-                    fencer.email or "",
                     m.get("nationality"),
                     fencer.name if m.get("matched_name") and fencer.name != m["matched_name"] else None,
                 )
@@ -462,17 +433,6 @@ def match_fencers(
                     entry.alternative_names_used = [
                         n for n in entry.alternative_names_used if n.lower() != name_lower
                     ]
-                    if fencer.email:
-                        correct_key = str(correct_hr_id) if correct_hr_id is not None else None
-                        email_in_correct = (
-                            correct_key is not None
-                            and correct_key in cache
-                            and fencer.email.lower() in {e.lower() for e in cache[correct_key].emails_used}
-                        )
-                        if not email_in_correct:
-                            entry.emails_used = [
-                                e for e in entry.emails_used if e.lower() != fencer.email.lower()
-                            ]
             # Apply correction
             updated_fencers[i] = fencer.model_copy(update={"hr_id": correct_hr_id})
             # Add new cache entry
@@ -482,7 +442,6 @@ def match_fencers(
                     cache, correct_hr_id,
                     hr_name or fencer.name,
                     hr_club or fencer.club or "",
-                    fencer.email or "",
                     hr_nat or fencer.nationality or None,
                     fencer.name if hr_name and _normalize(fencer.name) != _normalize(hr_name) else None,
                 )
@@ -535,7 +494,6 @@ def _match_table_chunks(
     hr_index: dict[int, tuple[str, str, str]],
     language: str = "EN",
     max_chunk: int = 1950,
-    proxy_emails: set[str] | None = None,
     single_row: bool = False,
 ) -> list[str]:
     """Build step-3 matching table as a list of code-block strings.
@@ -547,7 +505,7 @@ def _match_table_chunks(
     When single_row=True each fencer is rendered as one row using HR values only
     (Src="HR", Match="Ok"). Used for the confirmed section.
 
-    Match column: Ok = confirmed, ? = auto-matched, ?? = auto-matched proxy, !! = rejected.
+    Match column: Ok = confirmed, ? = auto-matched, !! = rejected.
     For rejected fencers the HR row shows the (wrong) rejected profile.
     """
     W_SRC, W_NAME, W_NAT, W_CLUB, W_HRID, W_MATCH = 3, 25, 3, 40, 5, 5
@@ -584,17 +542,7 @@ def _match_table_chunks(
     HEADER = _row("Src", "Name", "Nat", "Club", "HRID", "Match")
 
     # Build pair data
-    # Key by normalised name — more unique than email (proxy fencers share email).
     parsed_by_name = {_normalize(f.name): f for f in parsed_fencers}
-
-    # Detect proxy emails: one email used to register multiple different names
-    if proxy_emails is None:
-        from collections import defaultdict
-        email_names: dict[str, set[str]] = defaultdict(set)
-        for f in matched_fencers:
-            if f.email:
-                email_names[f.email.lower()].add(f.name.lower())
-        proxy_emails = {e for e, names in email_names.items() if len(names) > 1}
 
     # Each entry: (row1, row2 | None, row3 | None)
     pairs: list[tuple[str, str | None, str | None]] = []
@@ -604,7 +552,6 @@ def _match_table_chunks(
         orig_hr_id = pf.hr_id   # self-reported (or None)
         final_hr_id = mf.hr_id  # final value after matching
         rejected = orig_hr_id is not None and "rejected" in (mf.problems or "")
-        is_proxy = (mf.email or "").lower() in proxy_emails
 
         if single_row:
             # One row per fencer using HR profile values; fall back to registered data if not in index
@@ -636,10 +583,8 @@ def _match_table_chunks(
         if final_hr_id is not None:
             if orig_hr_id is not None and final_hr_id == orig_hr_id:
                 match_marker = ""       # self-reported, accepted (shouldn't reach here — goes to confirmed)
-            elif is_proxy:
-                match_marker = "??"    # auto-matched but email is shared — proxy suspect
             else:
-                match_marker = "?"     # regular auto-match
+                match_marker = "?"     # auto-match
             hrid_str = str(final_hr_id)
             lookup_id = final_hr_id
         else:

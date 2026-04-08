@@ -165,11 +165,51 @@ def _build_window_cost(
                 same_nat_in_j = sum(1 for f in pools[j] if f.nationality == fencer.nationality)
                 cost[i, j] += nat_weight * same_nat_in_j
 
-            # Wave: dual-discipline fencer cannot be in a parallel wave (hard constraint)
+            # Wave: dual-discipline fencer should not be in a parallel wave.
+            # Use a large finite penalty (not inf) so the cost matrix stays feasible
+            # even when a window has more dual fencers than non-parallel pool slots.
+            # Any remaining violations are fixed by _repair_wave_violations().
             if fencer.other_disciplines and config.is_parallel(config.wave_of_pool(j)):
-                cost[i, j] = np.inf
+                cost[i, j] += 1e6
 
     return cost
+
+
+def _repair_wave_violations(pools: list[list[PoolFencer]], config: PoolConfig) -> None:
+    """Swap dual fencers out of parallel-wave pools with non-dual fencers from non-parallel pools.
+
+    This runs after Hungarian construction, which may place dual fencers in parallel pools
+    when a window has more dual fencers than non-parallel pool slots. The repair ignores
+    tier constraints — it only ensures the hard wave constraint is satisfied.
+    """
+    n = config.num_pools
+    parallel_pools = [j for j in range(n) if config.is_parallel(config.wave_of_pool(j))]
+    if not parallel_pools:
+        return
+
+    repairs = 0
+    for pp in parallel_pools:
+        for i, fencer in enumerate(pools[pp]):
+            if not fencer.other_disciplines:
+                continue
+            # Find a non-dual fencer in a non-parallel pool to swap with
+            swapped = False
+            for np_pool in range(n):
+                if config.is_parallel(config.wave_of_pool(np_pool)):
+                    continue
+                for k, candidate in enumerate(pools[np_pool]):
+                    if not candidate.other_disciplines:
+                        pools[pp][i], pools[np_pool][k] = pools[np_pool][k], pools[pp][i]
+                        swapped = True
+                        repairs += 1
+                        break
+                if swapped:
+                    break
+            if not swapped:
+                log.warning("Cannot repair wave violation for %s (seed %d) — not enough non-dual fencers",
+                            fencer.name, fencer.seed)
+    if repairs:
+        log.info("Wave repair: swapped %d dual fencer(s) out of parallel pool(s)", repairs)
 
 
 def construct(
@@ -194,6 +234,7 @@ def construct(
         for r, c in zip(row_ind, col_ind):
             pools[c].append(window[r])
 
+    _repair_wave_violations(pools, config)
     return pools
 
 

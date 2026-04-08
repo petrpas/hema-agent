@@ -41,12 +41,14 @@ def _write_pool_table(
     cell_fn,
     row_num_col: int | None = None,
     label: str | None = None,
+    header_prefix: str = "Pool",
 ) -> int:
     """Write a pool table grid and return the next available row (1-based).
 
     cell_fn(fencer) returns the cell value for each fencer.
     row_num_col: if set, write row numbers 1,2,3... in that column.
     label: if set, write a label row above the first wave header.
+    header_prefix: prefix for pool headers (e.g. "Pool" → "Pool 1", "pool" → "pool 1").
     """
     current_row = start_row
 
@@ -62,7 +64,7 @@ def _write_pool_table(
         rows_in_wave = max(_MIN_ROWS_PER_WAVE, max_fencers)
 
         # Header row
-        header = [f"Pool {wave_start + i + 1}" for i in range(wave_size)]
+        header = [f"{header_prefix} {wave_start + i + 1}" for i in range(wave_size)]
         ws.update([header], _a1(current_row, start_col))
         ws.format(
             f"{_a1(current_row, start_col)}:"
@@ -180,11 +182,12 @@ def write_pools_sheet(
         row_num_col=_ROW_NUM_COL,
     )
 
-    # Seeds table (top right, same rows)
+    # Seeds table (top right, same rows) — lowercase "pool" to distinguish from names table
     _write_pool_table(
         ws, assignment, pool_config,
         start_row=1, start_col=seed_start_col,
         cell_fn=lambda f: f.seed,
+        header_prefix="pool",
     )
 
     # Clubs table (bottom left, 2-row gap below names)
@@ -193,6 +196,7 @@ def write_pools_sheet(
         start_row=names_end + 2, start_col=_POOL_TABLE_START_COL,
         cell_fn=lambda f: f.club or "",
         label="Clubs",
+        header_prefix="pool",
     )
 
     # Nationalities table (bottom right, same rows as clubs)
@@ -201,6 +205,7 @@ def write_pools_sheet(
         start_row=names_end + 2, start_col=seed_start_col,
         cell_fn=lambda f: f.nationality or "",
         label="Nationalities",
+        header_prefix="pool",
     )
 
     sheet_id = sh.id

@@ -79,7 +79,7 @@ def update_sheet_agent_run(
     )
     agent = Agent(
         model=config.model(Step.UPLOAD),
-        model_settings=AnthropicModelSettings(thinking=thinking),
+        model_settings=AnthropicModelSettings(thinking=thinking, max_tokens=16384),
         deps_type=SheetDeps,
         system_prompt=system_prompt,
     )

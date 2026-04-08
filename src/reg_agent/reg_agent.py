@@ -34,7 +34,7 @@ langfuse = get_langfuse_client()
 from config import RegConfig, RegUserConfig, load_config, save_config
 from discord_bot.discord_utils import send_long
 from models import FencerRecord
-from discord_bot.msg_constants import PAYMENTS_THREAD_INTRO, POOLS_CHANNEL_NAME
+from discord_bot.msg_constants import PAYMENTS_THREAD_INTRO, POOLS_CHANNEL_NAME, POOLS_WELCOME
 from msgs import read_msg as _read_msg, render_msg as _render_msg
 from setup_agent.setup_agent import SHARED_MEMORY_PATH
 from step1_download import download_registrations
@@ -510,16 +510,7 @@ async def tool_match_fencers(ctx: RunContext[AgentDeps]) -> str:
         tmpl   = _MATCH_TABLE_TEMPLATE.get(lang, _MATCH_TABLE_TEMPLATE["EN"])
         legend = _MATCH_TABLE_LEGEND.get(lang, _MATCH_TABLE_LEGEND["EN"])
 
-        # Pre-compute proxy_emails from full list (must not use a subset)
-        from collections import defaultdict
-        email_names: dict[str, set[str]] = defaultdict(set)
-        for f in fencers:
-            if f.email:
-                email_names[f.email.lower()].add(f.name.lower())
-        proxy_emails = {e for e, names in email_names.items() if len(names) > 1}
-
         # Categorize fencers
-        # Key by name — more unique than email (proxy fencers share email).
         parsed_by_name = {_normalize(f.name): f for f in parsed_fencers}
         groups: dict[str, list[FencerRecord]] = {"confirmed": [], "found": [], "unmatched": [], "rejected": []}
         for mf in fencers:
@@ -536,7 +527,6 @@ async def tool_match_fencers(ctx: RunContext[AgentDeps]) -> str:
                 await thread.send(tmpl[section])
                 for chunk in _match_table_chunks(
                     parsed_fencers, groups[section], hr_index,
-                    proxy_emails=proxy_emails,
                     single_row=(section == "confirmed"),
                 ):
                     await thread.send(chunk)
@@ -1418,6 +1408,9 @@ async def tool_create_pools_channel(ctx: RunContext[AgentDeps]) -> str:
     try:
         ch = await guild.create_text_channel(POOLS_CHANNEL_NAME)
         log.info("Created #%s in guild %s", POOLS_CHANNEL_NAME, guild)
+        lang = ctx.deps.config.language
+        welcome = POOLS_WELCOME.get(lang, POOLS_WELCOME["EN"])
+        await ch.send(welcome)
     except Exception as e:
         log.error("Failed to create #%s: %s", POOLS_CHANNEL_NAME, e)
         return f"error creating channel: {e}"

@@ -16,6 +16,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import gspread
+
 _SRC = Path(__file__).parent.parent
 if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
@@ -31,7 +33,8 @@ from pool_alch_agent.loader import load_discipline
 from pool_alch_agent.models import Assignment, PoolConfig, PoolFencer, Score, Weights
 from pool_alch_agent.validator import validate
 from pool_alch_agent.solver import solve, score as compute_score
-from pool_alch_agent.renderer import render_pools_png
+from pool_alch_agent.reader import read_pools_from_sheet
+from pool_alch_agent.renderer import render_pools, export_pools_csv
 from pool_alch_agent.state import save_state
 from pool_alch_agent.writer import write_pools_sheet
 
@@ -81,6 +84,7 @@ async def tool_load(ctx: RunContext[PoolAlchDeps], discipline_code: str) -> str:
     deps.fencers = fencers
     deps.current_discipline = discipline_code
     deps.validated = False
+    deps.pool_config = None
     deps.assignment = None
     deps.last_score = None
 
@@ -276,17 +280,30 @@ async def tool_write_to_sheet(ctx: RunContext[PoolAlchDeps]) -> str:
     if deps.pool_config is None:
         return "error: pool config not set."
 
-    try:
-        url, warnings = await asyncio.to_thread(
-            write_pools_sheet,
-            deps.config,
-            deps.current_discipline,
-            deps.fencers,
-            deps.assignment,
-            deps.pool_config,
-        )
-    except Exception as e:
-        return f"error writing sheet: {e}"
+    import time as _time
+    last_err = None
+    for attempt in range(3):
+        try:
+            url, warnings = await asyncio.to_thread(
+                write_pools_sheet,
+                deps.config,
+                deps.current_discipline,
+                deps.fencers,
+                deps.assignment,
+                deps.pool_config,
+            )
+            break
+        except gspread.exceptions.APIError as e:
+            last_err = e
+            if e.response.status_code in (429, 500, 503) and attempt < 2:
+                log.warning("Google API error %d on attempt %d, retrying...", e.response.status_code, attempt + 1)
+                await asyncio.sleep(2 ** attempt * 5)
+            else:
+                return f"error writing sheet: {e}"
+        except Exception as e:
+            return f"error writing sheet: {e}"
+    else:
+        return f"error writing sheet after 3 attempts: {last_err}"
 
     lines = [f"Written to sheet: {url}"]
     if warnings:
@@ -296,38 +313,79 @@ async def tool_write_to_sheet(ctx: RunContext[PoolAlchDeps]) -> str:
 
 
 @pool_alch_agent.tool
-async def tool_render_png(ctx: RunContext[PoolAlchDeps]) -> str:
-    """Render the current pool assignment as PNG image(s) and post them to the channel.
+async def tool_read_pools_from_sheet(ctx: RunContext[PoolAlchDeps]) -> str:
+    """Read pool assignments back from the sheet after user edits.
 
-    Requires an approved (or at least reviewed) assignment.
-    Call after tool_run_solver or tool_swap_fencers to share a visual overview.
+    Validates names against fencer list and reports any issues.
+    Call this when the organiser confirms the pools are final, before exporting.
+    """
+    deps = ctx.deps
+    if not deps.current_discipline:
+        return "error: no discipline loaded."
+
+    try:
+        sheet_data = await asyncio.to_thread(
+            read_pools_from_sheet, deps.config, deps.current_discipline,
+        )
+    except Exception as e:
+        return f"error reading pools from sheet: {e}"
+
+    if not sheet_data.assignment:
+        return "error: no pools found in the sheet."
+
+    # Update deps with sheet-sourced assignment
+    deps.assignment = sheet_data.assignment
+    save_state(deps)
+
+    total = sum(len(p) for p in sheet_data.assignment)
+    lines = [f"Read {len(sheet_data.assignment)} pools ({total} fencers) from sheet."]
+    if sheet_data.warnings:
+        lines.append(f"\nValidation issues ({len(sheet_data.warnings)}):")
+        lines.extend(f"  - {w}" for w in sheet_data.warnings)
+        lines.append("\nAsk the organiser if these issues are OK before exporting.")
+    else:
+        lines.append("All fencers matched — ready to export.")
+    return "\n".join(lines)
+
+
+@pool_alch_agent.tool
+async def tool_export_pools(ctx: RunContext[PoolAlchDeps]) -> str:
+    """Export finalized pools: render PNG+PDF and generate rosters CSV.
+
+    Posts PNG to the Discord channel. Call after tool_read_pools_from_sheet
+    and after any validation issues have been acknowledged by the organiser.
     """
     deps = ctx.deps
     if deps.assignment is None:
-        return "error: no assignment — run solver first."
+        return "error: no assignment — call tool_read_pools_from_sheet first."
     if not deps.current_discipline:
         return "error: no discipline loaded."
-    if deps.pool_config is None:
-        return "error: pool config not set."
 
     try:
-        paths = await asyncio.to_thread(
-            render_pools_png,
-            deps.config,
-            deps.current_discipline,
+        render_paths = await asyncio.to_thread(
+            render_pools, deps.config, deps.current_discipline,
             deps.assignment,
-            deps.pool_config,
+        )
+        csv_path = await asyncio.to_thread(
+            export_pools_csv, deps.config, deps.current_discipline,
+            deps.assignment,
         )
     except Exception as e:
-        return f"error rendering PNG: {e}"
+        return f"error exporting: {e}"
 
-    png_paths = [p for p in paths if p.suffix == ".png"]
-    if not png_paths:
-        return "error: no PNG output produced."
+    png_paths = [p for p in render_paths if p.suffix == ".png"]
+    pdf_paths = [p for p in render_paths if p.suffix == ".pdf"]
 
-    files = [discord.File(str(p)) for p in png_paths]
-    await deps.channel.send(files=files)
-    return f"Posted {len(png_paths)} PNG page(s)."
+    if png_paths:
+        files = [discord.File(str(p)) for p in png_paths]
+        await deps.channel.send(files=files)
+
+    lines = [f"Exported pools for {deps.current_discipline}:"]
+    lines.append(f"  - {len(png_paths)} PNG page(s) posted to channel")
+    if pdf_paths:
+        lines.append(f"  - PDF: {pdf_paths[0].name}")
+    lines.append(f"  - CSV roster: {csv_path.name}")
+    return "\n".join(lines)
 
 
 @pool_alch_agent.tool

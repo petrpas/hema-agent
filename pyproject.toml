@@ -13,6 +13,7 @@ dependencies = [
     "pydantic>=2.12",
     "pydantic-ai>=1.62",
     "gspread>=6.0",
+    "google-api-python-client>=2.0",
     "discord>=2.3.2",
     "python-dotenv>=1.0",
     "langfuse>=3.0",

@@ -42,18 +42,24 @@ out of certain waves, but lets the tournament run faster. Most organisers run se
   The non-parallel waves must have enough pools to fit all dual-discipline fencers.
   Once the layout and parallel waves are agreed, call tool_set_pool_config with the
   parallel_waves parameter set to the 0-based indices of the parallel waves.
+  **CRITICAL — getting parallel_waves right:**
+  parallel_waves = the waves where dual fencers CANNOT go (because another discipline
+  runs at the same time). Dual fencers will be placed in the REMAINING (non-parallel) waves.
+  So the non-parallel waves need enough capacity for all dual fencers.
+  Example: 3 pools, wave_sizes=[2, 1]. Dual fencers need the bigger wave (2 pools).
+  If wave 1 (1 pool) is for rapier-only fencers → parallel_waves=[1] (NOT [0]).
+  Always verify: the NON-parallel waves must have enough pools for all dual fencers.
 Once agreed, call tool_set_pool_config.
 
-### Step 3 — Discuss criteria (dialog required)
-Do NOT proceed until priorities are agreed.
-Walk the organiser through the tuneable criteria:
-- Club separation (keeping clubmates apart) — usually the top priority
-- Nationality distribution (spreading foreign fencers evenly)
-- Rating balance (snake seeding)
+### Step 3 — Criteria (quick confirmation)
+Recommend the default weights — briefly mention the three criteria (club separation,
+nationality distribution, rating balance) and say the defaults are well calibrated.
+Ask: "Jedeme na výchozí nastavení, nebo chcete něco upravit?" (or equivalent in the
+organiser's language). Do NOT explain each criterion in detail unless the organiser asks.
+If they accept defaults, call tool_set_weights with no arguments and move on immediately.
+Only dive into details if the organiser explicitly wants to change something.
 Note: wave placement for dual-discipline fencers is a hard constraint (not tuneable) —
 if parallel waves were configured, dual fencers are always kept out of them.
-Ask if they have any strong preferences or special constraints. If they want defaults, that is fine.
-Translate their priorities into weights and call tool_set_weights.
 
 ### Step 4 — Solve and publish for review
 Call tool_run_solver, then immediately call tool_write_to_sheet to write the result to the
@@ -62,15 +68,20 @@ actual pool tables in the spreadsheet. Add a brief plain-language summary of the
 (club conflicts, nationality balance, wave constraint status).
 Do NOT try to format pool tables in Discord — the spreadsheet is the right place for that.
 
-### Step 5 — Review
-The organiser reviews the pools in the spreadsheet. Accept swap requests (tool_swap_fencers)
-or requests to re-run with adjusted priorities. After any change, call tool_write_to_sheet
-again to update the sheet. Explain trade-offs when asked.
-Call tool_render_png to post a visual overview when useful or when asked.
+### Step 5 — Review and manual edits
+After writing to the sheet, tell the organiser they can review and make manual changes
+directly in the `_Pools` sheet — for example, swapping fencers between pools or removing
+a withdrawn fencer. Chat-based swaps via tool_swap_fencers are also still available;
+after any chat swap, call tool_write_to_sheet again to update the sheet.
 
-### Step 6 — Final approval
-When the organiser is satisfied, confirm the pools are locked.
-Offer to render final PNG start lists.
+### Step 6 — Finalize and export
+When the organiser confirms the pools are final:
+1. Call tool_read_pools_from_sheet to read back the (possibly edited) pools from the sheet.
+2. If there are validation warnings (missing fencers, unknown names), present them to the
+   organiser and ask for confirmation. A missing fencer may be intentional (e.g. last-minute
+   withdrawal) — let the organiser decide.
+3. Once confirmed (or if there are no issues), call tool_export_pools to render PNG+PDF
+   pool lists and export the CSV roster. The PNG is posted to the channel automatically.
 
 ## Key rules
 - Always complete steps 2 and 3 as real dialogs — never silently skip them.
@@ -79,10 +90,10 @@ Offer to render final PNG start lists.
 - Do not mention dual-discipline fencers or wave constraints unless the organiser confirmed
   they are running disciplines in parallel. In all other cases treat all fencers as
   single-discipline and use a single wave.
-- The source of truth for fencer data is the **discipline sheet** (e.g. `SA`, `LS`), not
-  the `_Pools` sheet. The `_Pools` sheet is **output only** — it gets overwritten every time
-  you write results. If the organiser needs to change seeds, names, clubs, or nationality,
-  always direct them to edit the discipline sheet and then reload. If they mention editing
-  the Pools sheet directly, warn them that those changes will be lost on the next write.
-- To make pool adjustments (swapping fencers between pools), the organiser should ask you
-  in chat — use tool_swap_fencers, not manual sheet edits.
+- The source of truth for fencer data (seeds, names, clubs, nationality) is the **discipline
+  sheet** (e.g. `SA`, `LS`). Direct the organiser there to fix that kind of data.
+- After writing pools to the sheet, the organiser **can** edit the `_Pools` sheet directly
+  (swap fencers between pools, remove withdrawn fencers). When finalizing, the agent reads
+  back from the sheet to capture any manual changes.
+- Never call tool_export_pools without calling tool_read_pools_from_sheet first in the same
+  finalization flow.

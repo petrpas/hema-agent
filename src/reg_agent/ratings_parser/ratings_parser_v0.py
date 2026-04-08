@@ -28,7 +28,7 @@ def parse_ratings(html: str, hr_id: int) -> dict[str, tuple[float | None, int | 
 
     The page is the fighter's own details page — every data row belongs to them.
     Structure: discipline group header row, then one data row per category in that group.
-    Columns: Category | Rank (current) | Weighted Rating (current) | Rank (best) | Rating (best)
+    Columns: Category | Last competed | Rank (current) | Weighted Rating (current) | Rank (best) | Rating (best)
     """
     result: dict[str, tuple[float | None, int | None]] = {}
 
@@ -53,12 +53,12 @@ def parse_ratings(html: str, hr_id: int) -> dict[str, tuple[float | None, int | 
             if re.search(keyword, row, re.DOTALL) or re.search(escaped, row, re.DOTALL) or re.search(keyword, unescaped, re.DOTALL):
                 cells = re.findall(r'<td[^>]*>(.*?)</td>', row, re.DOTALL)
                 cells_text = [re.sub(r'<[^>]+>', '', c).strip() for c in cells]
-                # cells_text: [category_name, rank_current, rating_current, ...]
-                if len(cells_text) >= 3 and cells_text[0]:  # skip empty/spacer rows
-                    rank_match = re.search(r'(\d+)', cells_text[1])
+                # cells_text: [category_name, last_competed, rank_current, rating_current, ...]
+                if len(cells_text) >= 4 and cells_text[0]:  # skip empty/spacer rows
+                    rank_match = re.search(r'(\d+)', cells_text[2])
                     rank = int(rank_match.group(1)) if rank_match else None
                     try:
-                        rating = float(cells_text[2])
+                        rating = float(cells_text[3])
                     except ValueError:
                         rating = None
                     for code in codes:

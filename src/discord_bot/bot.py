@@ -12,7 +12,7 @@ import os
 import sys
 from pathlib import Path
 
-from discord_bot.msg_constants import REGISTRATION_CHANEL_NAME, SETUP_CHANEL_NAME, SETUP_WELCOME, POOLS_WELCOME, POOLS_CHANNEL_NAME
+from discord_bot.msg_constants import REGISTRATION_CHANEL_NAME, SETUP_CHANEL_NAME, SETUP_WELCOME, POOLS_CHANNEL_NAME
 
 # Make reg_agent importable when bot.py is run directly from src/discord/
 _SRC = Path(__file__).parent.parent
@@ -39,7 +39,6 @@ log = logging.getLogger(__name__)
 # channel name → welcome message (plain str = language-independent, dict = keyed by lang code)
 CHANNEL_WELCOMES: dict[str, str | dict[str, str]] = {
     SETUP_CHANEL_NAME: SETUP_WELCOME,
-    POOLS_CHANNEL_NAME: POOLS_WELCOME,
 }
 
 
@@ -343,7 +342,17 @@ class RegistrationCog(commands.Cog):
             parent = thread.parent
             if not isinstance(parent, discord.TextChannel):
                 return
-            synthetic = f"[system: organiser said in 💰 Payments thread: {message.content}]"
+            # Add context about current payments state so the agent knows what to do
+            matched_path = self.bot.config.data_dir / "payments" / "matched.json"
+            if matched_path.exists():
+                state_hint = "Match results already exist — if the organiser is approving, call tool_write_payments (NOT tool_process_payments)."
+            else:
+                all_txns = load_all_parsed(self.bot.config.data_dir)
+                if all_txns:
+                    state_hint = f"{len(all_txns)} transaction(s) parsed but not yet matched."
+                else:
+                    state_hint = "No transactions parsed yet."
+            synthetic = f"[system: organiser said in 💰 Payments thread: {message.content}. State: {state_hint}]"
             await self._invoke_agent(parent, synthetic, response_channel=thread)
 
     async def _parse_and_store_payment_file(

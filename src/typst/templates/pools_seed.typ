@@ -23,15 +23,9 @@
   )
 )
 
-// waves: array of waves, matching PoolConfig.wave_sizes.
-// Each wave is an array of (pool_no, fencers) pairs,
+// pools: flat array of (pool_no, fencers) pairs,
 // where fencers is an array of name strings sorted by seed.
-// Example for wave_sizes=[4,4,2,2]:
-//   waves = (
-//     ((1, ("A","B","C")), (2, ("D","E")), (3, (...)), (4, (...))),
-//     ((5, (...)), ...),
-//     ...
-//   )
+// col_count: number of columns in the grid (1, 2, or 3).
 {{data}}
 
 #let render-pool(pool_no, fencers) = {
@@ -48,12 +42,9 @@
   )
 }
 
-#for (wave_i, wave) in waves.enumerate() {
-  columns(wave.len())[
-    #for (i, pool) in wave.enumerate() {
-      if i > 0 { colbreak() }
-      render-pool(pool.at(0), pool.at(1))
-    }
-  ]
-  if wave_i < waves.len() - 1 { v(1em) }
-}
+#grid(
+  columns: (1fr,) * col_count,
+  column-gutter: 1.5em,
+  row-gutter: 1em,
+  ..pools.map(pool => render-pool(pool.at(0), pool.at(1)))
+)

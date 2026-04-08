@@ -101,10 +101,7 @@ def validate(fencers: list[PoolFencer], config: PoolConfig | None = None) -> lis
                 f"need at least one non-parallel wave"
             ))
         elif dual_count > 0:
-            max_capacity = max(
-                (s for i, s in enumerate(ws) if i not in config.parallel_waves),
-                default=0,
-            ) * _MAX_POOL_SIZE
+            max_capacity = non_parallel_pools * _MAX_POOL_SIZE
             if dual_count > max_capacity:
                 issues.append(ValidationIssue(
                     None, "parallel_waves",
