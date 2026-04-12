@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 from discord_bot.msg_constants import REGISTRATION_CHANEL_NAME, SETUP_CHANEL_NAME, SETUP_WELCOME, POOLS_CHANNEL_NAME
+from msgs import render_msg
 
 # Make reg_agent importable when bot.py is run directly from src/discord/
 _SRC = Path(__file__).parent.parent
@@ -29,6 +30,7 @@ from reg_agent.step1_download import save_registration_csv
 from reg_agent.step7_payments import parse_and_store, load_all_parsed
 from setup_agent.setup_agent import run_setup_agent
 from pool_alch_agent.pool_alch_agent import run_pool_alch_agent, PoolAlchDeps
+from payment_agent.payment_agent import run_payment_agent
 from pool_alch_agent.state import load_state, deps_from_state
 from config import load_config, RegConfig
 
@@ -334,26 +336,22 @@ class RegistrationCog(commands.Cog):
             all_txns = load_all_parsed(self.bot.config.data_dir)
             parsed_dir = self.bot.config.data_dir / "payments" / "parsed"
             file_count = len(list(parsed_dir.glob("*.json"))) if parsed_dir.exists() else 0
-            await thread.send(
-                f"📊 {len(all_txns)} transaction(s) total across {file_count} file(s)."
-            )
+            lang = self.bot.config.language
+            await thread.send(render_msg("payment/files_parsed", {
+                "total": len(all_txns),
+                "files": file_count,
+            }, lang))
         else:
-            # Text message in payments thread → forward to agent via synthetic message
-            parent = thread.parent
-            if not isinstance(parent, discord.TextChannel):
+            # Text message in payments thread → delegate to The Treasurer
+            if thread.id in self._running:
+                await thread.send("Already processing — please wait.")
                 return
-            # Add context about current payments state so the agent knows what to do
-            matched_path = self.bot.config.data_dir / "payments" / "matched.json"
-            if matched_path.exists():
-                state_hint = "Match results already exist — if the organiser is approving, call tool_write_payments (NOT tool_process_payments)."
-            else:
-                all_txns = load_all_parsed(self.bot.config.data_dir)
-                if all_txns:
-                    state_hint = f"{len(all_txns)} transaction(s) parsed but not yet matched."
-                else:
-                    state_hint = "No transactions parsed yet."
-            synthetic = f"[system: organiser said in 💰 Payments thread: {message.content}. State: {state_hint}]"
-            await self._invoke_agent(parent, synthetic, response_channel=thread)
+            self._running.add(thread.id)
+            try:
+                async with thread.typing():
+                    await run_payment_agent(thread, message.content, self.bot.config)
+            finally:
+                self._running.discard(thread.id)
 
     async def _parse_and_store_payment_file(
         self,

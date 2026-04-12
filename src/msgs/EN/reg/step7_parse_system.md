@@ -9,7 +9,7 @@ For each plausible incoming payment include:
   - sender_name: name of the sender
   - reference: payment reference / message as found
   - amount: amount including currency symbol, e.g. "€150.00"
-  - notes: any other relevant detail (bank name, account, etc.)
+  - notes: additional reference text or message that didn't fit in `reference` (leave empty if none)
 
 Filter OUT:
   - Outgoing payments (debits / charges / fees paid by the account holder)

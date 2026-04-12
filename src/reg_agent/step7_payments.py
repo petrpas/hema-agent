@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import unicodedata
 from pathlib import Path
 from typing import Literal
@@ -68,7 +69,14 @@ class PaymentsResult(BaseModel):
     unmatched_fencers: list[str]
 
 
-# ── Prompts loaded from msgs/ ──────────────────────────────────────────────────
+def parse_amount(amount_str: str) -> float:
+    """Strip currency and convert to float. Handles both European (600,05) and English (600.05) formats."""
+    digits = re.sub(r"[^\d.,]", "", amount_str)
+    if "," in digits and "." in digits:
+        digits = digits.replace(",", "")   # comma = thousands separator
+    else:
+        digits = digits.replace(",", ".")  # comma = decimal separator (Czech/European)
+    return float(digits)
 
 
 # ── LLM calls ─────────────────────────────────────────────────────────────────
@@ -138,14 +146,29 @@ def parse_and_store(raw_content: str, filename: str, data_dir: Path, config: Reg
 
 
 def load_all_parsed(data_dir: Path) -> list[ParsedTransaction]:
-    """Aggregate transactions from all parsed/*.json files."""
+    """Aggregate transactions from all parsed/*.json files, removing duplicates.
+
+    Bank exports with overlapping date ranges produce identical transactions
+    across files.  Duplicates are detected by (date, sender_name, amount,
+    reference); only the first occurrence is kept.
+    """
     parsed_dir = data_dir / PAYMENTS_PARSED_DIR
     if not parsed_dir.exists():
         return []
     all_txns: list[ParsedTransaction] = []
     for f in sorted(parsed_dir.glob("*.json")):
         all_txns.extend(ParsedTransactionList.model_validate_json(f.read_text()).transactions)
-    return all_txns
+    seen: set[tuple[str, str, str, str]] = set()
+    deduped: list[ParsedTransaction] = []
+    for txn in all_txns:
+        key = (txn.date, txn.sender_name, txn.amount, txn.reference)
+        if key not in seen:
+            seen.add(key)
+            deduped.append(txn)
+    removed = len(all_txns) - len(deduped)
+    if removed:
+        logger.info("Removed %d duplicate transaction(s) across payment files", removed)
+    return deduped
 
 
 def _report_header(result: "PaymentsResult") -> str:
