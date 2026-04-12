@@ -360,17 +360,25 @@ def match_fencers(
                 hr_nat or None,
                 fencer.name if hr_name and _normalize(fencer.name) != _normalize(hr_name) else None,
             )
+            hr_canonical = hr_name or fencer.name
+            name_changed = _normalize(fencer.name) != _normalize(hr_canonical)
             updated_fencers.append(fencer.model_copy(update={
-                "nationality": fencer.nationality or hr_nat or "",
+                "name": hr_canonical,
+                "reg_name": fencer.name if name_changed else None,
+                "nationality": hr_nat or to_nat_code(fencer.nationality) or "",
                 "club": hr_club or fencer.club,
             }))
             continue
 
         entry = _cache_lookup_by_name(cache, fencer.name)
         if entry:
+            hr_canonical = entry.full_name
+            name_changed = _normalize(fencer.name) != _normalize(hr_canonical)
             matched = fencer.model_copy(update={
                 "hr_id": entry.hr_id,
-                "nationality": fencer.nationality or to_nat_code(entry.nationality) or "",
+                "name": hr_canonical,
+                "reg_name": fencer.name if name_changed else None,
+                "nationality": to_nat_code(entry.nationality) or to_nat_code(fencer.nationality) or "",
                 "club": entry.club or fencer.club or None,
             })
             _upsert_cache_entry(
@@ -395,9 +403,13 @@ def match_fencers(
             lookup = _make_lookup_key(fencer.name, fencer.club)
             m = match_by_key.get(lookup)
             if m and m.get("hr_id"):
+                hr_canonical = m.get("matched_name") or fencer.name
+                name_changed = _normalize(fencer.name) != _normalize(hr_canonical)
                 updated_fencers[i] = fencer.model_copy(update={
                     "hr_id": m["hr_id"],
-                    "nationality": fencer.nationality or to_nat_code(m.get("nationality")) or "",
+                    "name": hr_canonical,
+                    "reg_name": fencer.name if name_changed else None,
+                    "nationality": to_nat_code(m.get("nationality")) or to_nat_code(fencer.nationality) or "",
                     "club": m.get("matched_club") or fencer.club,
                 })
                 _upsert_cache_entry(
@@ -416,10 +428,13 @@ def match_fencers(
     if corrections:
         corrections_lower = {k.lower(): (k, v) for k, v in corrections.items()}
         for i, fencer in enumerate(updated_fencers):
+            # Look up by both HR name and original registration name
             key = fencer.name.lower()
-            if key not in corrections_lower:
+            alt_key = fencer.reg_name.lower() if fencer.reg_name else None
+            match = corrections_lower.get(key) or (corrections_lower.get(alt_key) if alt_key else None)
+            if not match:
                 continue
-            _, correct_hr_id = corrections_lower[key]
+            _, correct_hr_id = match
             old_hr_id = fencer.hr_id
             if old_hr_id == correct_hr_id:
                 continue
@@ -433,11 +448,20 @@ def match_fencers(
                     entry.alternative_names_used = [
                         n for n in entry.alternative_names_used if n.lower() != name_lower
                     ]
-            # Apply correction
-            updated_fencers[i] = fencer.model_copy(update={"hr_id": correct_hr_id})
-            # Add new cache entry
+            # Apply correction — also update name from HR index
             if correct_hr_id is not None:
                 hr_name, hr_nat, hr_club = hr_index.get(correct_hr_id, (None, None, None))
+                update: dict = {"hr_id": correct_hr_id}
+                if hr_name:
+                    orig_name = fencer.reg_name or fencer.name
+                    if _normalize(orig_name) != _normalize(hr_name):
+                        update["name"] = hr_name
+                        update["reg_name"] = orig_name
+                    else:
+                        update["name"] = hr_name
+                if hr_nat:
+                    update["nationality"] = hr_nat
+                updated_fencers[i] = fencer.model_copy(update=update)
                 _upsert_cache_entry(
                     cache, correct_hr_id,
                     hr_name or fencer.name,
@@ -445,6 +469,13 @@ def match_fencers(
                     hr_nat or fencer.nationality or None,
                     fencer.name if hr_name and _normalize(fencer.name) != _normalize(hr_name) else None,
                 )
+            else:
+                # Correction to None — revert to registration name
+                update = {"hr_id": None}
+                if fencer.reg_name:
+                    update["name"] = fencer.reg_name
+                    update["reg_name"] = None
+                updated_fencers[i] = fencer.model_copy(update=update)
 
     _save_cache(cache, cache_path)
 
@@ -548,7 +579,8 @@ def _match_table_chunks(
     pairs: list[tuple[str, str | None, str | None]] = []
 
     for mf in matched_fencers:
-        pf = parsed_by_name.get(_normalize(mf.name), mf)
+        lookup_name = mf.reg_name or mf.name
+        pf = parsed_by_name.get(_normalize(lookup_name), mf)
         orig_hr_id = pf.hr_id   # self-reported (or None)
         final_hr_id = mf.hr_id  # final value after matching
         rejected = orig_hr_id is not None and "rejected" in (mf.problems or "")

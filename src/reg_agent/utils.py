@@ -15,6 +15,7 @@ FENCERS_DEDUPED_FILE = "fencers_deduped.json"
 FENCERS_DEDUPED_FP_FILE = "fencers_deduped.fingerprint"
 
 _NATIONALITY_CODES: dict[str, str] = {
+    # Full country names
     "Czech Republic": "CZ", "Czechia": "CZ",
     "Slovakia": "SK",
     "Germany": "DE",
@@ -51,6 +52,21 @@ _NATIONALITY_CODES: dict[str, str] = {
     "Japan": "JP",
     "Israel": "IL",
     "Belarus": "BY",
+    # 3-letter ISO 3166-1 alpha-3 / IOC codes
+    "CZE": "CZ", "SVK": "SK", "DEU": "DE", "GER": "DE",
+    "POL": "PL", "HUN": "HU", "AUT": "AT",
+    "GBR": "GB", "ENG": "GB",
+    "USA": "US", "FRA": "FR", "NLD": "NL", "NED": "NL",
+    "BEL": "BE", "ITA": "IT", "SWE": "SE", "FIN": "FI",
+    "NOR": "NO", "DNK": "DK", "DEN": "DK",
+    "ESP": "ES", "PRT": "PT", "POR": "PT",
+    "RUS": "RU", "UKR": "UA", "EST": "EE",
+    "LVA": "LV", "LAT": "LV", "LTU": "LT", "LIT": "LT",
+    "ROU": "RO", "ROM": "RO", "BGR": "BG", "BUL": "BG",
+    "HRV": "HR", "CRO": "HR", "SVN": "SI", "SLO": "SI",
+    "SRB": "RS", "CHE": "CH", "SUI": "CH",
+    "IRL": "IE", "CAN": "CA", "AUS": "AU",
+    "BRA": "BR", "JPN": "JP", "ISR": "IL", "BLR": "BY",
 }
 
 

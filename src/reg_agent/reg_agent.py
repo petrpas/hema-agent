@@ -514,7 +514,8 @@ async def tool_match_fencers(ctx: RunContext[AgentDeps]) -> str:
         parsed_by_name = {_normalize(f.name): f for f in parsed_fencers}
         groups: dict[str, list[FencerRecord]] = {"confirmed": [], "found": [], "unmatched": [], "rejected": []}
         for mf in fencers:
-            pf = parsed_by_name.get(_normalize(mf.name), mf)
+            lookup_name = mf.reg_name or mf.name
+            pf = parsed_by_name.get(_normalize(lookup_name), mf)
             groups[_categorize_fencer(pf, mf)].append(mf)
 
         SECTION_ORDER = ["confirmed", "found", "unmatched", "rejected"]
@@ -624,16 +625,19 @@ async def tool_correct_match(
     cache_path = data_dir / FENCERS_CACHE_FILE
     cache = _load_cache(cache_path)
     corrections = load_corrections(data_dir)
+    fighters_text = _get_fighters_compact(data_dir)
+    hr_index = _build_hr_index(fighters_text)
 
-    # Find fencer by name — exact match first, then case-insensitive
+    # Find fencer by name (or reg_name) — exact match first, then case-insensitive
     target_idx: int | None = None
     for i, f in enumerate(fencers):
-        if f.name == fencer_name:
+        if f.name == fencer_name or (f.reg_name and f.reg_name == fencer_name):
             target_idx = i
             break
     if target_idx is None:
+        fencer_name_lower = fencer_name.lower()
         for i, f in enumerate(fencers):
-            if f.name.lower() == fencer_name.lower():
+            if f.name.lower() == fencer_name_lower or (f.reg_name and f.reg_name.lower() == fencer_name_lower):
                 target_idx = i
                 break
     if target_idx is None:
@@ -666,21 +670,36 @@ async def tool_correct_match(
                         e for e in entry.emails_used if e.lower() != fencer.email.lower()
                     ]
 
-    # Apply correction
-    fencers[target_idx] = fencer.model_copy(update={"hr_id": correct_hr_id})
-
-    # Add new cache entry
+    # Apply correction — also update name from HR index
+    update: dict = {"hr_id": correct_hr_id}
     if correct_hr_id is not None:
+        hr_name, hr_nat, hr_club = hr_index.get(correct_hr_id, (None, None, None))
+        if hr_name:
+            orig_name = fencer.reg_name or fencer.name
+            if _normalize(orig_name) != _normalize(hr_name):
+                update["name"] = hr_name
+                update["reg_name"] = orig_name
+            else:
+                update["name"] = hr_name
+        if hr_nat:
+            update["nationality"] = hr_nat
         _upsert_cache_entry(
             cache, correct_hr_id,
-            fencer.name, fencer.club or "",
-            fencer.email or "",
-            fencer.nationality or None,
-            None,
+            hr_name or fencer.name, hr_club or fencer.club or "",
+            hr_nat or fencer.nationality or None,
+            fencer.name if hr_name and _normalize(fencer.name) != _normalize(hr_name) else None,
         )
+    else:
+        # Correction to None — revert to registration name
+        if fencer.reg_name:
+            update["name"] = fencer.reg_name
+            update["reg_name"] = None
+    fencers[target_idx] = fencer.model_copy(update=update)
 
-    # Persist correction so reruns reproduce the correct result
+    # Persist correction under both names so reruns find it regardless of name form
     corrections[fencer_name] = correct_hr_id
+    if fencer.reg_name and fencer.reg_name.lower() != fencer.name.lower():
+        corrections[fencer.reg_name] = correct_hr_id
 
     save_fencers_list(fencers, data_dir / FENCERS_MATCHED_FILE)
     _save_cache(cache, cache_path)
@@ -691,8 +710,8 @@ async def tool_correct_match(
     if deduped is not None:
         corrected_name_lower = normalize_name(fencer_name)
         for i, f in enumerate(deduped):
-            if normalize_name(f.name) == corrected_name_lower:
-                deduped[i] = f.model_copy(update={"hr_id": correct_hr_id})
+            if normalize_name(f.name) == corrected_name_lower or (f.reg_name and normalize_name(f.reg_name) == corrected_name_lower):
+                deduped[i] = f.model_copy(update=update)
                 break
         save_fencers_list(deduped, data_dir / FENCERS_DEDUPED_FILE)
 

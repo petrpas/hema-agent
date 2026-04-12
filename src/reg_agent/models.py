@@ -42,6 +42,7 @@ class FencerRating(BaseModel):
 class FencerRecord(BaseModel):
     registration_time: str = Field(description="Use isoformat (e.g. 2020-03-14T15:32:52.00).")
     name: str = Field(description="Full name of the fencer e.g. John Smith. Always put first name first.")
+    reg_name: str | None = Field(description="Original name from registration form, before HR canonical name was applied. None if unchanged.", default=None)
     nationality: str = Field(description="Fencer's nationality abbr. e.g. CZ, SK, DE, US, etc., if explicitly mentioned", default="")
     email: str | None
     club: str | None

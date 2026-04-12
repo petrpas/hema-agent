@@ -33,8 +33,8 @@ _F_HRID = 4
 _F_DISC = 5
 _F_PAID = 6
 
-# Discipline worksheet: No. | Name | Nat. | Club | HR_ID | HRating | HRank
-_D_SEED = 0
+# Discipline worksheet: No. | Name | Nat. | Club | HR_ID | HRating | HRank | Seed
+_D_NO   = 0
 _D_NAME = 1
 _D_NAT  = 2
 _D_CLUB = 3
@@ -185,28 +185,29 @@ def _render_discipline_source(
 ) -> str:
     """Build .typ source for one discipline list (disciplines.typ).
 
-    Columns: Seed, Fencer, Nat., Club, HRID, RANK, Paid
-    Rows are sorted by the Seed column (located by header name).
+    Columns: No., Fencer, Nat., Club, HRID, RANK, Paid
+    Rows are sorted by registration number (No. column) so the capacity
+    line separates accepted fencers from the waitlist.
     last_in = min(len, limit) if limit set.
     Paid is cross-referenced from the Fencers worksheet by name.
     """
     def _col(row: list[str], idx: int) -> str:
         return row[idx].strip() if len(row) > idx else ""
 
-    seed_idx = _col_index(header, "Seed") or _D_SEED
+    no_idx = _col_index(header, "No.") or _D_NO
     rank_idx = _col_index(header, "HRank") or _D_RANK
 
-    def _seed_key(row: list[str]) -> int:
+    def _reg_key(row: list[str]) -> int:
         try:
-            return int(_col(row, seed_idx))
+            return int(_col(row, no_idx))
         except ValueError:
             return 9999
 
     data_rows = []
-    for row in sorted(rows, key=_seed_key):
+    for row in sorted(rows, key=_reg_key):
         name = _col(row, _D_NAME)
         data_rows.append([
-            _col(row, seed_idx),
+            _col(row, no_idx),
             name,
             _col(row, _D_NAT),
             _col(row, _D_CLUB),

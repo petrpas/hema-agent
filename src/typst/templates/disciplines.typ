@@ -47,7 +47,7 @@
   columns: (2.5em, 1.5fr, 2.25em, 2fr, 4em, 4em, 4em),
 
   table.header(
-    table.cell(align: center, [*Seed*]),
+    table.cell(align: center, [*No.*]),
     table.cell(align: center, [*Fencer*]),
     table.cell(align: center, [*Nat.*]),
     table.cell(align: center, [*Club*]),
