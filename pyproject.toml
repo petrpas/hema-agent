@@ -21,14 +21,17 @@ dependencies = [
     "jinja2>=3.0",
     "typst>=0.14",
     "scipy>=1.13",
-    "numpy>=2.0"
+    "numpy>=2.0",
+    "qrcode[pil]>=8.0"
 ]
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-msgs = ["EN/**/*.md", "CS/**/*.md"]
+"pre_tournament.msgs" = ["EN/**/*.md", "CS/**/*.md"]
+"in_tournament.msgs"  = ["EN/**/*.md", "CS/**/*.md"]
+"shared.config"       = ["agent_config.json"]
 
 [tool.ruff]
 line-length = 100
@@ -47,4 +50,4 @@ ignore = [
 ]
 
 [project.scripts]
-reg-agent = "reg_agent.main:main"
+reg-agent = "pre_tournament.reg_agent.main:main"

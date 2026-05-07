@@ -29,10 +29,11 @@ def _split_for_discord(text: str, max_len: int = DISCORD_MAX_LEN) -> list[str]:
             chunks.append(line[:max_len])
             line = line[max_len:]
 
-        if len(chunk) + len(line) > max_len:
-            close = "```\n" if in_code_block else ""
+        close = "```\n" if in_code_block else ""
+        reopen = "```\n" if in_code_block else ""
+        if len(chunk) + len(line) + len(close) > max_len:
             chunks.append(chunk + close)
-            chunk = ("```\n" if in_code_block else "") + line
+            chunk = reopen + line
         else:
             chunk += line
 

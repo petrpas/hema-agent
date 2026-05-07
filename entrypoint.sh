@@ -12,4 +12,4 @@ if [ -n "${USER_CONFIG_B64:-}" ] && [ ! -f "/app/data/user_config.json" ]; then
     echo "$USER_CONFIG_B64" | base64 -d > /app/data/user_config.json
 fi
 
-exec python src/discord_bot/bot.py
+exec python src/discord_bot/pre_bot.py

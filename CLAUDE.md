@@ -19,15 +19,22 @@ one Fly app per tournament. Each app has its own Discord bot token and persisten
 
 ```
 src/
-  config/               — Config models (RegConfig, AgentConfig) and loaders
+  shared/
+    config/             — AppConfig, RegAgentSystemConfig, Step, load_agent_config; agent_config.json
+  pre_tournament/
+    config/             — PreUserConfig, PreConfig, load_pre_config, save_pre_config
+    reg_agent/          — Registration enrichment pipeline (steps 1–7 + payments)
+    setup_agent/        — Pre-tournament setup wizard
+    pool_alch_agent/    — Pool assignment designer (solver + LLM agent)
+    payment_agent/      — Payment matching agent
+  in_tournament/
+    config/             — InUserConfig, InConfig, load_in_config, save_in_config
+    run_setup_agent/    — In-tournament setup wizard
   discord_bot/
-    bot.py              — Bot entry point; one Cog per agent channel
-    msg_constants.py    — Channel names, and pre-loaded message constants
+    pre_bot.py          — Pre-tournament bot entry point
+    run_bot.py          — In-tournament bot entry point
+    msg_constants.py    — Channel names and pre-loaded message constants
     discord_utils.py    — send_long() helper
-  msgs/                 — All user-facing text and LLM prompts (see section below)
-  reg_agent/            — Registration enrichment pipeline (steps 1–7 + payments)
-  setup_agent/          — Tournament setup wizard
-  pool_alch_agent/      — Pool assignment designer (solver + LLM agent)
 
 deploy/                 — Fly.io deployment scripts and templates
 typst/                  — Typst templates and fonts for PNG rendering
@@ -38,20 +45,22 @@ data/                   — Runtime data dir (gitignored); persisted on Fly volu
 
 ## Adding a new agent
 
-1. Create `src/<name>_agent/` with at minimum:
+Place the agent under the right phase package: `pre_tournament/`, `in_tournament/`, or `post_tournament/`.
+
+1. Create `src/<phase>/<name>_agent/` with at minimum:
    - `models.py` — Pydantic/dataclass models
    - `<name>_agent.py` — pydantic-ai `Agent`, `Deps` dataclass, tools, `run_<name>_agent()` async fn
-2. Add a channel name constant to `discord_bot/msg_constants.py`.
-3. Add a `<Name>Cog` to `discord_bot/bot.py` and register it in `setup_hook()`.
-4. Put all prompts and messages in `src/msgs/` (see below).
+2. Add a channel name constant to `src/discord_bot/msg_constants.py`.
+3. Add a `<Name>Cog` to the relevant bot entry-point in `src/discord_bot/` (`pre_bot.py` for pre-tournament, `run_bot.py` for in-tournament) and register it in `setup_hook()`.
+4. Put all prompts and messages in `src/<phase>/msgs/` (see below).
 
 ---
 
-## src/msgs/ — message and prompt organisation
+## msgs — message and prompt organisation
 
-All user-facing text and LLM system prompts live here as `.md` files, never hardcoded in Python.
+All user-facing text and LLM system prompts live in each phase package's `msgs/` subtree as `.md` files, never hardcoded in Python.
 
-**Structure:** `src/msgs/{LANG}/{agent}/filename.md`
+**Structure:** `src/<phase>/msgs/{LANG}/{agent}/filename.md`
 
 | Folder | Contents |
 |---|---|
@@ -62,11 +71,12 @@ All user-facing text and LLM system prompts live here as `.md` files, never hard
 | `CS/{agent}/` | Czech translations — same filenames, fall back to EN if missing |
 
 **Usage:**
-```python
-from msgs import read_msg, render_msg
 
-read_msg("reg/system_prompt")               # plain text
-read_msg("setup/info", lang)                # with language fallback
+```python
+from pre_tournament.msgs import read_msg, render_msg
+
+read_msg("reg/system_prompt")  # plain text
+read_msg("setup/info", lang)  # with language fallback
 render_msg("shared/sheet_access_request", {"bot_email": email}, lang)  # Jinja2 template
 ```
 
@@ -81,15 +91,34 @@ render_msg("shared/sheet_access_request", {"bot_email": email}, lang)  # Jinja2 
 
 ## Config
 
-Two JSON files merged at runtime into `RegConfig`:
+Three JSON files, one system-wide and one per bot phase:
 
-- `src/config/agent_config.json` — system settings (model names, paths, thinking tokens); committed
-- `user_config.json` — tournament-specific (name, disciplines, sheet URL, language); gitignored, lives on Fly volume
+- `src/shared/config/agent_config.json` — system/AI settings (model names, paths, thinking tokens); committed
+- `pre_user_config.json` — pre-tournament settings (tournament name, disciplines, sheet URLs, language); gitignored, lives on Fly volume
+- `in_user_config.json` — in-tournament settings (tournament name, disciplines, limits, data sheet URL); gitignored, lives on Fly volume
 
-Load with:
+**Pre-tournament** (`PreConfig` = `PreUserConfig` + `RegAgentSystemConfig`):
+- Fields: `tournament_name`, `language`, `disciplines`, `discipline_limits`, `registration_sheet_url`, `output_sheet_url`
+- `data_dir` is a computed field: `Path(data_root_dir) / tournament_name`
+
 ```python
-from config import load_config
-config = load_config(user_config_path)   # RegConfig
+from pre_tournament.config import load_pre_config, PreConfig, PreUserConfig, save_pre_config
+
+config = load_pre_config(user_config_path)  # PreConfig
+```
+
+**In-tournament** (`InConfig` = `InUserConfig` + system defaults):
+- Fields: `tournament_name`, `language`, `disciplines`, `discipline_limits`, `tournament_display_name`, `data_sheet_url`
+
+```python
+from in_tournament.config import load_in_config, InConfig
+
+config = load_in_config(user_config_path)  # InConfig
+```
+
+**App config** (system settings only, shared):
+```python
+from shared.config import load_agent_config, AgentConfig, Step
 ```
 
 ---

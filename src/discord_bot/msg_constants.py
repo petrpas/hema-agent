@@ -1,4 +1,4 @@
-from msgs import read_msg, render_msg  # noqa: F401 (render_msg re-exported for callers)
+from pre_tournament.msgs import read_msg, render_msg  # noqa: F401 (render_msg re-exported for callers)
 
 APP_NAME = "HEMA Squire"
 

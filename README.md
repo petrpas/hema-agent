@@ -24,7 +24,7 @@ It helps the HEMA Tournament organiser with various administrative tasks
 
 ## Fencer registration pipeline
 
-See the **[reg-agent](src/reg_agent/README.md)** docs
+See the **[reg-agent](src/pre_tournament/reg_agent/README.md)** docs
 
 ## Deployment
 
