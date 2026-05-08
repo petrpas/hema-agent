@@ -55,9 +55,15 @@ class RegAgentSystemConfig(BaseModel):
         return "anthropic:claude-sonnet-4-6"
 
 
+class RunAgentSystemConfig(BaseModel):
+    """System settings for the in-tournament run_agent module."""
+    data_sheet_template_url: str = ""
+
+
 class AgentConfig(BaseModel):
     """Root model for agent_config.json — one section per module."""
     reg_agent: RegAgentSystemConfig = RegAgentSystemConfig()
+    run_agent: RunAgentSystemConfig = RunAgentSystemConfig()
     pool_alch_model: str = "anthropic:claude-sonnet-4-6"
 
 

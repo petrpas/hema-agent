@@ -42,11 +42,9 @@ and persist them to user_config.json.
    Once confirmed:
    - Call save_disciplines with the collected dict (code → human-readable description).
 
-5. **Participant counts** — After disciplines are saved, ask the organiser for the expected
-   number of fencers in each discipline (or upper limit if unsure). Present the disciplines
-   one by one or as a list — whatever feels natural. Once the organiser provides all counts:
-   - Call save_discipline_limits with the collected dict (code → integer count).
-   - Mention that these counts can be adjusted later in this same channel at any time.
+5. **Data sheets & finish** — After disciplines are confirmed:
+   - Call create_data_sheets to create one data entry sheet per discipline from the template.
+     Paste the returned sheet list verbatim into your output.
    - Call publish_invite_links to post the QR codes and invite links to the public channels.
    - Call finish_setup to finalise configuration.
    - Return the result of finish_setup verbatim as your output — do not paraphrase or add to it,

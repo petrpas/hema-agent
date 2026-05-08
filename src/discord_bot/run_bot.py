@@ -32,8 +32,19 @@ from shared.config import load_agent_config
 from in_tournament.config import load_in_config, InConfig
 
 from discord_bot.discord_utils import send_long
-from in_tournament.run_setup_agent.run_setup_agent import RUN_SETUP_WELCOME, run_run_setup_agent
+from in_tournament.run_setup_agent.run_setup_agent import (
+    DISCIPLINE_NAMES,
+    SHARED_MEMORY_PATH,
+    _DEFAULT_USER_CONFIG,
+    _append_memory,
+    _do_init_data_dir,
+    _do_save_disciplines,
+    _do_save_language,
+    RUN_SETUP_WELCOME,
+    run_run_setup_agent,
+)
 from in_tournament.server_layout import ROLES, SETUP_CHANNEL
+from table2ascii import Alignment, PresetStyle, table2ascii
 from in_tournament.setup import (
     InviteSnapshot,
     assign_role_for_invite,
@@ -72,6 +83,7 @@ class HemaTournamentRunBot(commands.Bot):
         await self.add_cog(GeneralCog(self))
         await self.add_cog(ServerSetupCog(self))
         await self.add_cog(SetupAgentCog(self))
+        await self.add_cog(SetupCommandsCog(self))
         # ResultsCog will be added in the next slice.
 
     async def on_ready(self) -> None:
@@ -98,6 +110,27 @@ class GeneralCog(commands.Cog):
 
     def __init__(self, bot: HemaTournamentRunBot) -> None:
         self.bot = bot
+
+    @app_commands.command(name="help", description="List all available bot commands")
+    async def help(self, interaction: discord.Interaction) -> None:
+        msg = (
+            "**HEMA Tournament Bot — commands**\n"
+            "\n"
+            "**Server**\n"
+            "`/setup` — Provision roles, channels, permissions and invite links *(manage_guild)*\n"
+            "\n"
+            "**Setup wizard shortcuts** *(manage_guild — use in #setup)*\n"
+            "`/set_language <code>` — Set organiser language (EN, CS, DE, …)\n"
+            "`/set_name <name>` — Set tournament display name\n"
+            "`/set_disciplines <codes>` — Set disciplines as comma-separated codes, e.g. `LS,SAW,SB`\n"
+            "\n"
+            "**Moderation**\n"
+            "`/clear` — Delete all messages in this channel except the first *(manage_messages)*\n"
+            "\n"
+            "You can also type freely in **#setup** to configure the tournament step by step "
+            "with the AI assistant."
+        )
+        await interaction.response.send_message(msg, ephemeral=True)
 
     @app_commands.command(
         name="clear",
@@ -275,6 +308,109 @@ class SetupAgentCog(commands.Cog):
                 await run_run_setup_agent(message.channel, message.content, data_root=data_root, **kwargs)
         finally:
             self._running.discard(message.channel.id)
+
+
+_LANG_CHOICES = [
+    app_commands.Choice(name=code, value=code)
+    for code in ["EN", "CS", "DE", "FR", "ES", "IT", "PL", "SK", "HU", "RU"]
+]
+
+
+class SetupCommandsCog(commands.Cog):
+    """Slash-command shortcuts that bypass the LLM for well-known setup steps.
+
+    Each command directly calls the same `_do_*` helpers used by the agent
+    tools, then posts a confirmation to the #setup channel.
+    """
+
+    def __init__(self, bot: HemaTournamentRunBot) -> None:
+        self.bot = bot
+
+    def _user_config_path(self) -> Path:
+        env = os.environ.get("USER_CONFIG")
+        return Path(env) if env else _DEFAULT_USER_CONFIG
+
+    async def _post_setup(self, guild: discord.Guild, text: str) -> None:
+        ch = discord.utils.get(guild.text_channels, name=SETUP_CHANNEL)
+        if ch is not None:
+            await send_long(ch, text)
+
+    @app_commands.command(
+        name="set_language",
+        description="Set the organiser language for this tournament",
+    )
+    @app_commands.describe(code="ISO 639-1 language code, e.g. EN, CS, DE")
+    @app_commands.choices(code=_LANG_CHOICES)
+    @app_commands.default_permissions(manage_guild=True)
+    async def set_language(self, interaction: discord.Interaction, code: str) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        msg = _do_save_language(self._user_config_path(), SHARED_MEMORY_PATH, code)
+        await self._post_setup(interaction.guild, msg)
+        await interaction.followup.send(f"Language set to **{code.upper()}** — see #setup.", ephemeral=True)
+
+    @app_commands.command(
+        name="set_name",
+        description="Set the tournament display name",
+    )
+    @app_commands.describe(name="Full tournament name, e.g. Prague Open 2026")
+    @app_commands.default_permissions(manage_guild=True)
+    async def set_name(self, interaction: discord.Interaction, name: str) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
+            return
+        if not name.strip():
+            await interaction.response.send_message("Tournament name cannot be empty.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        _append_memory(SHARED_MEMORY_PATH, f"Tournament name: {name}")
+        result = _do_init_data_dir(self._user_config_path(), name.strip())
+        await self._post_setup(interaction.guild, f"Tournament name set to **{name}**.\n_{result}_")
+        await interaction.followup.send(f"Tournament name saved — see #setup.", ephemeral=True)
+
+    @app_commands.command(
+        name="set_disciplines",
+        description="Set tournament disciplines using comma-separated codes, e.g. LS,SAW,SB",
+    )
+    @app_commands.describe(codes="Comma-separated discipline codes, e.g. LS,SAW,SB or LS, SAW, SB")
+    @app_commands.default_permissions(manage_guild=True)
+    async def set_disciplines(self, interaction: discord.Interaction, codes: str) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        raw_codes = [c.strip() for c in codes.split(",") if c.strip()]
+        if not raw_codes:
+            await interaction.followup.send("No codes provided.", ephemeral=True)
+            return
+
+        unknown = [c for c in raw_codes if c not in DISCIPLINE_NAMES]
+        if unknown:
+            valid = ", ".join(sorted(DISCIPLINE_NAMES))
+            await interaction.followup.send(
+                f"Unknown code(s): **{', '.join(unknown)}**.\nValid codes: {valid}",
+                ephemeral=True,
+            )
+            return
+
+        disciplines = {c: DISCIPLINE_NAMES[c] for c in raw_codes}
+        _do_save_disciplines(self._user_config_path(), disciplines)
+
+        rows = [[code, name] for code, name in disciplines.items()]
+        table = table2ascii(
+            header=["Code", "Discipline"],
+            body=rows,
+            style=PresetStyle.thin_compact,
+            alignments=[Alignment.LEFT, Alignment.LEFT],
+        )
+        await self._post_setup(
+            interaction.guild,
+            f"Disciplines saved:\n```\n{table}\n```",
+        )
+        await interaction.followup.send("Disciplines saved — see #setup.", ephemeral=True)
 
 
 def run() -> None:

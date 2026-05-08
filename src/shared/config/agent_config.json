@@ -1,5 +1,8 @@
 {
   "pool_alch_model": "anthropic:claude-sonnet-4-6",
+  "run_agent": {
+    "data_sheet_template_url": "https://docs.google.com/spreadsheets/d/1f9EmC9HoAIlIEYHAHttkZ87rJTZ43pXsaV48ZlqZe5Y/edit?usp=sharing"
+  },
   "reg_agent": {
     "ai_models": {
       "default": "anthropic:claude-sonnet-4-6",

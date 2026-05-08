@@ -51,6 +51,31 @@ RUN_SETUP_INFO     = {lang: _read_msg("run_setup/info", lang)     for lang in _S
 RUN_SETUP_COMPLETE = {lang: _read_msg("run_setup/complete", lang) for lang in _SUPPORTED_LANGS}
 RUN_SETUP_WELCOME  = _read_msg("run_setup/welcome")
 
+# Static lookup used by both the agent and the slash-command shortcuts.
+DISCIPLINE_NAMES: dict[str, str] = {
+    "LS":          "Longsword Open",
+    "LSW":         "Longsword Women",
+    "LSM":         "Longsword Men",
+    "SA":          "Sabre Open",
+    "SAW":         "Sabre Women",
+    "SAM":         "Sabre Men",
+    "RA":          "Rapier Open",
+    "RAW":         "Rapier Women",
+    "RAM":         "Rapier Men",
+    "RD":          "Rapier & Dagger Open",
+    "RDW":         "Rapier & Dagger Women",
+    "RDM":         "Rapier & Dagger Men",
+    "SB":          "Sword & Buckler Open",
+    "SBW":         "Sword & Buckler Women",
+    "SBM":         "Sword & Buckler Men",
+    "Plastic LS":  "Plastic Longsword Open",
+    "Plastic LSW": "Plastic Longsword Women",
+    "Plastic SA":  "Plastic Sabre Open",
+    "Plastic SAW": "Plastic Sabre Women",
+    "Plastic RA":  "Plastic Rapier Open",
+    "Plastic SB":  "Plastic Sword & Buckler Open",
+}
+
 
 @dataclass
 class SetupDeps:
@@ -165,6 +190,19 @@ def format_table(ctx: RunContext[SetupDeps], csv: str, alignments: list[str] | N
     return f"```\n{table}\n```"
 
 
+def _do_save_language(user_config_path: Path, memory_path: Path, language_code: str) -> str:
+    """Persist language to memory + user config and return the pre-built info message."""
+    code = language_code.upper()
+    _append_memory(
+        memory_path,
+        f"Preferred language: {code}. ALWAYS use {code} when writing messages to the organiser. "
+        "Internal reasoning, tool call arguments, and all other agent outputs remain in English.",
+    )
+    _update_user_config(user_config_path, {"language": code})
+    log.info("Language set to: %s", code)
+    return RUN_SETUP_INFO.get(code, RUN_SETUP_INFO["EN"])
+
+
 @setup_agent.tool
 def save_language(ctx: RunContext[SetupDeps], language_code: str) -> str:
     """Save the organiser's preferred language to memory and user config.
@@ -172,15 +210,25 @@ def save_language(ctx: RunContext[SetupDeps], language_code: str) -> str:
     Returns the pre-built info message for that language if one exists,
     or the English version as fallback.
     """
-    code = language_code.upper()
-    _append_memory(
-        ctx.deps.memory_path,
-        f"Preferred language: {code}. ALWAYS use {code} when writing messages to the organiser. "
-        "Internal reasoning, tool call arguments, and all other agent outputs remain in English.",
-    )
-    _update_user_config(ctx.deps.user_config_path, {"language": code})
-    log.info("Language set to: %s", code)
-    return RUN_SETUP_INFO.get(code, RUN_SETUP_INFO["EN"])
+    return _do_save_language(ctx.deps.user_config_path, ctx.deps.memory_path, language_code)
+
+
+def _do_init_data_dir(user_config_path: Path, tournament_name: str) -> str:
+    """Create the tournament data directory and persist name to user config."""
+    try:
+        agent_config = load_agent_config()
+        data_root = agent_config.reg_agent.data_root_dir
+        slug = _slugify(tournament_name)
+        data_dir = Path(data_root) / slug
+        data_dir.mkdir(parents=True, exist_ok=True)
+        _update_user_config(user_config_path, {
+            "tournament_name": slug,
+            "tournament_display_name": tournament_name,
+        })
+        log.info("Created data dir: %s", data_dir)
+        return f"Created data directory: {data_dir}"
+    except Exception as e:
+        return f"error: {e}"
 
 
 @setup_agent.tool
@@ -190,18 +238,15 @@ def init_data_dir(ctx: RunContext[SetupDeps], tournament_name: str) -> str:
     The directory is created as <data_root>/<slug> where slug is the tournament name
     lowercased and with non-alphanumeric characters replaced by underscores.
     """
+    return _do_init_data_dir(ctx.deps.user_config_path, tournament_name)
+
+
+def _do_save_disciplines(user_config_path: Path, disciplines: dict[str, str]) -> str:
+    """Persist disciplines dict to user config."""
     try:
-        agent_config = load_agent_config()
-        data_root = agent_config.reg_agent.data_root_dir
-        slug = _slugify(tournament_name)
-        data_dir = Path(data_root) / slug
-        data_dir.mkdir(parents=True, exist_ok=True)
-        _update_user_config(ctx.deps.user_config_path, {
-            "tournament_name": slug,
-            "tournament_display_name": tournament_name,
-        })
-        log.info("Created data dir: %s", data_dir)
-        return f"Created data directory: {data_dir}"
+        _update_user_config(user_config_path, {"disciplines": disciplines})
+        log.info("Saved disciplines: %s", list(disciplines.keys()))
+        return f"Saved {len(disciplines)} discipline(s): {', '.join(disciplines.keys())}"
     except Exception as e:
         return f"error: {e}"
 
@@ -213,27 +258,83 @@ def save_disciplines(ctx: RunContext[SetupDeps], disciplines: dict[str, str]) ->
     disciplines: dict mapping discipline code to human-readable description,
     e.g. {"LS": "Longsword Open", "LSW": "Longsword Women"}.
     """
-    try:
-        _update_user_config(ctx.deps.user_config_path, {"disciplines": disciplines})
-        log.info("Saved disciplines: %s", list(disciplines.keys()))
-        return f"Saved {len(disciplines)} discipline(s): {', '.join(disciplines.keys())}"
-    except Exception as e:
-        return f"error: {e}"
+    return _do_save_disciplines(ctx.deps.user_config_path, disciplines)
 
 
 @setup_agent.tool
-def save_discipline_limits(ctx: RunContext[SetupDeps], limits: dict[str, int]) -> str:
-    """Save per-discipline expected/maximum participant counts to user config.
+def create_data_sheets(ctx: RunContext[SetupDeps]) -> str:
+    """Copy the template data sheet once per discipline and save URLs to user config.
 
-    limits: dict mapping discipline code to expected fencer count,
-    e.g. {"LS": 32, "LSW": 16}.
+    Reads disciplines from user config, copies the Drive template for each one,
+    shares each copy with anyone (writer), and persists the URLs to data_sheet_urls.
+    Returns a formatted list of discipline → URL pairs to post in Discord.
     """
+    import re as _re
     try:
-        _update_user_config(ctx.deps.user_config_path, {"discipline_limits": limits})
-        log.info("Saved discipline limits: %s", limits)
-        return f"Saved counts: {', '.join(f'{k}={v}' for k, v in limits.items())}"
-    except Exception as e:
-        return f"error: {e}"
+        from google.oauth2.service_account import Credentials
+        from googleapiclient.discovery import build as _build
+        import gspread
+    except ImportError as e:
+        return f"error: missing dependency — {e}"
+
+    # Load user config
+    user_cfg: dict = {}
+    if ctx.deps.user_config_path.exists():
+        try:
+            with open(ctx.deps.user_config_path) as f:
+                user_cfg = json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    disciplines: dict[str, str] = user_cfg.get("disciplines", {})
+    if not disciplines:
+        return "error: no disciplines saved yet — run save_disciplines first"
+
+    display_name: str = user_cfg.get("tournament_display_name") or user_cfg.get("tournament_name", "Tournament")
+
+    # Load system config
+    agent_config = load_agent_config()
+    template_url = agent_config.run_agent.data_sheet_template_url
+    if not template_url:
+        return "error: data_sheet_template_url is not set in agent_config.json"
+
+    tm = _re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", template_url)
+    if not tm:
+        return f"error: cannot extract file ID from template URL: {template_url}"
+    template_id = tm.group(1)
+
+    folder_id: str | None = None
+    if agent_config.reg_agent.drive_folder_url:
+        fm = _re.search(r"/folders/([a-zA-Z0-9_-]+)", agent_config.reg_agent.drive_folder_url)
+        if fm:
+            folder_id = fm.group(1)
+
+    scopes = [
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds = Credentials.from_service_account_file(agent_config.reg_agent.creds_path, scopes=scopes)
+    drive = _build("drive", "v3", credentials=creds)
+    gc = gspread.authorize(creds)
+
+    urls: dict[str, str] = {}
+    lines: list[str] = []
+    for code, disc_name in disciplines.items():
+        title = f"{display_name} – {disc_name}"
+        body: dict = {"name": title, "mimeType": "application/vnd.google-apps.spreadsheet"}
+        if folder_id:
+            body["parents"] = [folder_id]
+        f = drive.files().copy(fileId=template_id, body=body, fields="id", supportsAllDrives=True).execute()
+        sheet_id = f["id"]
+        sh = gc.open_by_key(sheet_id)
+        sh.share(None, perm_type="anyone", role="writer")
+        url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit"
+        urls[code] = url
+        lines.append(f"**{code}** ({disc_name}): {url}")
+        log.info("Created data sheet for %s: %s", code, url)
+
+    _update_user_config(ctx.deps.user_config_path, {"data_sheet_urls": urls})
+    return "Data sheets created:\n" + "\n".join(lines)
 
 
 @setup_agent.tool
