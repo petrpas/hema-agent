@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import asyncio
+import io
 import json
 import logging
 import os
@@ -34,6 +35,7 @@ from shared.config import load_agent_config
 from in_tournament.config import load_in_config, InConfig
 
 from discord_bot.discord_utils import send_long
+from in_tournament.render_pools import render_pools_for_disc
 from in_tournament.run_setup_agent.run_setup_agent import (
     DISCIPLINE_NAMES,
     SHARED_MEMORY_PATH,
@@ -127,9 +129,11 @@ class GeneralCog(commands.Cog):
             "`/set_name <name>` — Set tournament display name\n"
             "`/set_disciplines <codes>` — Set disciplines as comma-separated codes, e.g. `LS,SAW,SB`\n"
             "\n"
-            "**Validation** *(manage_guild)*\n"
+            "**Validation & rendering** *(manage_guild)*\n"
             "`/validate_disc [disciplines]` — Check pool sheets against the tournament roster. "
             "Omit `disciplines` to validate all configured disciplines.\n"
+            "`/render_pools <disc>` — Render pool table PDFs for a discipline and post them "
+            "to the **pool_tables** thread in #setup.\n"
             "\n"
             "**Moderation**\n"
             "`/clear` — Delete all messages in this channel except the first *(manage_messages)*\n"
@@ -282,6 +286,22 @@ class ServerSetupCog(commands.Cog):
         await interaction.followup.send(msg, files=qr_files, ephemeral=True)
 
 
+async def _typing_loop(channel: discord.TextChannel) -> None:
+    """Send a typing indicator every 8 s, silently swallowing HTTP errors.
+
+    The built-in channel.typing() context manager retries 429s until it raises,
+    which crashes the on_message handler. This coroutine fires every 8 s (well
+    within Discord's ~10 s typing-indicator window) and ignores rate-limit errors.
+    Run as an asyncio.Task and cancel it when the LLM call completes.
+    """
+    while True:
+        try:
+            await channel._state.http.send_typing(channel.id)
+        except Exception:
+            pass
+        await asyncio.sleep(8)
+
+
 class SetupAgentCog(commands.Cog):
     """Handles the #setup channel — delegates to the run-bot setup agent."""
 
@@ -304,16 +324,17 @@ class SetupAgentCog(commands.Cog):
             await message.channel.send("⏳ Already processing — please wait.")
             return
         self._running.add(message.channel.id)
+        typing_task = asyncio.create_task(_typing_loop(message.channel))
         try:
-            async with message.channel.typing():
-                user_config_path = os.environ.get("USER_CONFIG")
-                kwargs = {"user_config_path": Path(user_config_path)} if user_config_path else {}
-                if self.bot.config is not None:
-                    data_root = Path(self.bot.config.data_root_dir)
-                else:
-                    data_root = Path(load_agent_config().reg_agent.data_root_dir)
-                await run_run_setup_agent(message.channel, message.content, data_root=data_root, **kwargs)
+            user_config_path = os.environ.get("USER_CONFIG")
+            kwargs = {"user_config_path": Path(user_config_path)} if user_config_path else {}
+            if self.bot.config is not None:
+                data_root = Path(self.bot.config.data_root_dir)
+            else:
+                data_root = Path(load_agent_config().reg_agent.data_root_dir)
+            await run_run_setup_agent(message.channel, message.content, data_root=data_root, **kwargs)
         finally:
+            typing_task.cancel()
             self._running.discard(message.channel.id)
 
 
@@ -481,6 +502,79 @@ class SetupCommandsCog(commands.Cog):
             )
         else:
             await interaction.followup.send(report, ephemeral=True)
+
+    @app_commands.command(
+        name="render_pools",
+        description="Render pool table PDFs for a discipline and post to #setup → pool_tables thread",
+    )
+    @app_commands.describe(disc="Discipline code, e.g. LS, SAW")
+    @app_commands.default_permissions(manage_guild=True)
+    async def render_pools(self, interaction: discord.Interaction, disc: str) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
+            return
+
+        disc = disc.strip()
+        if disc not in DISCIPLINE_NAMES:
+            await interaction.response.send_message(
+                f"Unknown discipline code **{disc}**. "
+                f"Valid codes: {', '.join(sorted(DISCIPLINE_NAMES))}",
+                ephemeral=True,
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        user_config = self._user_config_path()
+        try:
+            pdfs: list[tuple[str, bytes]] = await asyncio.to_thread(
+                render_pools_for_disc, disc, user_config
+            )
+        except ValueError as e:
+            await interaction.followup.send(f"❌ {e}", ephemeral=True)
+            return
+        except Exception as e:
+            log.exception("render_pools failed for %s", disc)
+            await interaction.followup.send(f"❌ Unexpected error: {e}", ephemeral=True)
+            return
+
+        # Find the #setup channel
+        setup_ch = discord.utils.get(interaction.guild.text_channels, name=SETUP_CHANNEL)
+        if setup_ch is None:
+            await interaction.followup.send("❌ #setup channel not found.", ephemeral=True)
+            return
+
+        # Find or create the pool_tables thread
+        thread = discord.utils.get(setup_ch.threads, name="pool_tables")
+        if thread is None:
+            async for t in setup_ch.archived_threads(limit=50):
+                if t.name == "pool_tables":
+                    await t.unarchive()
+                    thread = t
+                    break
+        if thread is None:
+            thread = await setup_ch.create_thread(
+                name="pool_tables",
+                type=discord.ChannelType.public_thread,
+                auto_archive_duration=10080,  # 1 week
+            )
+
+        # Post all PDFs in one message
+        files = [
+            discord.File(io.BytesIO(pdf_bytes), filename=filename)
+            for filename, pdf_bytes in pdfs
+        ]
+        disc_name = DISCIPLINE_NAMES[disc]
+        await thread.send(
+            f"**{disc}** — {disc_name} ({len(pdfs)} pool(s))",
+            files=files,
+        )
+
+        await interaction.followup.send(
+            f"Rendered {len(pdfs)} pool table(s) for **{disc}** — see the "
+            f"**pool_tables** thread in #{SETUP_CHANNEL}.",
+            ephemeral=True,
+        )
 
 
 def run() -> None:
