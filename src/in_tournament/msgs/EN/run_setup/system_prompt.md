@@ -42,13 +42,24 @@ and persist them to user_config.json.
    Once confirmed:
    - Call save_disciplines with the collected dict (code → human-readable description).
 
-5. **Data sheets & finish** — After disciplines are confirmed:
+5. **Data sheets** — After disciplines are confirmed:
    - Call create_data_sheets to create one data entry sheet per discipline from the template.
      Paste the returned sheet list verbatim into your output.
    - Call publish_invite_links to post the QR codes and invite links to the public channels.
-   - Call finish_setup to finalise configuration.
-   - Return the result of finish_setup verbatim as your output — do not paraphrase or add to it,
-     unless anything is factually wrong.
+   - Ask the organiser to fill in all data sheets with the enrolled fencers and their pool
+     assignments, then come back and confirm when done.
+   - Stop and wait. Do NOT call finish_setup yet.
+
+6. **Validation & finish** — Once the organiser says the sheets are filled:
+   - Call validate_discipline_sheets to check every sheet against the tournament roster.
+   - Paste the returned validation report verbatim into your output.
+   - If any discipline reports errors (❌ or ⚠):
+     - Explain what needs to be fixed and ask the organiser to correct the sheets and confirm again.
+     - On their next confirmation, call validate_discipline_sheets again and repeat.
+   - Once all disciplines show ✅:
+     - Call finish_setup to finalise configuration.
+     - Return the result of finish_setup verbatim as your output — do not paraphrase or add to it,
+       unless anything is factually wrong.
 
 ## Discipline list (on request)
 If the organiser asks what disciplines are available, what codes exist, or for a list of options,

@@ -12,6 +12,8 @@ module, setup-agent cog, and results-loop cog land in later slices.
 from dotenv import load_dotenv
 load_dotenv()
 
+import asyncio
+import json
 import logging
 import os
 import sys
@@ -40,6 +42,7 @@ from in_tournament.run_setup_agent.run_setup_agent import (
     _do_init_data_dir,
     _do_save_disciplines,
     _do_save_language,
+    _do_validate_disciplines,
     RUN_SETUP_WELCOME,
     run_run_setup_agent,
 )
@@ -123,6 +126,10 @@ class GeneralCog(commands.Cog):
             "`/set_language <code>` — Set organiser language (EN, CS, DE, …)\n"
             "`/set_name <name>` — Set tournament display name\n"
             "`/set_disciplines <codes>` — Set disciplines as comma-separated codes, e.g. `LS,SAW,SB`\n"
+            "\n"
+            "**Validation** *(manage_guild)*\n"
+            "`/validate_disc [disciplines]` — Check pool sheets against the tournament roster. "
+            "Omit `disciplines` to validate all configured disciplines.\n"
             "\n"
             "**Moderation**\n"
             "`/clear` — Delete all messages in this channel except the first *(manage_messages)*\n"
@@ -411,6 +418,69 @@ class SetupCommandsCog(commands.Cog):
             f"Disciplines saved:\n```\n{table}\n```",
         )
         await interaction.followup.send("Disciplines saved — see #setup.", ephemeral=True)
+
+    @app_commands.command(
+        name="validate_disc",
+        description="Check pool sheets against the tournament roster",
+    )
+    @app_commands.describe(
+        disciplines="Comma-separated discipline codes to check, e.g. LS,SAW. Leave empty to check all."
+    )
+    @app_commands.default_permissions(manage_guild=True)
+    async def validate_disc(
+        self, interaction: discord.Interaction, disciplines: str = ""
+    ) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        user_config = self._user_config_path()
+
+        # Resolve which disciplines to validate
+        if disciplines.strip():
+            codes_to_check = [c.strip() for c in disciplines.split(",") if c.strip()]
+            unknown = [c for c in codes_to_check if c not in DISCIPLINE_NAMES]
+            if unknown:
+                await interaction.followup.send(
+                    f"Unknown code(s): **{', '.join(unknown)}**. "
+                    f"Valid codes: {', '.join(sorted(DISCIPLINE_NAMES))}",
+                    ephemeral=True,
+                )
+                return
+        else:
+            try:
+                with open(user_config) as f:
+                    cfg = json.load(f)
+                codes_to_check = list(cfg.get("disciplines", {}).keys())
+            except Exception:
+                codes_to_check = []
+            if not codes_to_check:
+                await interaction.followup.send(
+                    "No disciplines configured. "
+                    "Run `/set_disciplines` first or pass codes explicitly.",
+                    ephemeral=True,
+                )
+                return
+
+        if self.bot.config is not None:
+            data_root = Path(self.bot.config.data_root_dir)
+        else:
+            data_root = Path(load_agent_config().reg_agent.data_root_dir)
+
+        report = await asyncio.to_thread(
+            _do_validate_disciplines, codes_to_check, user_config, data_root
+        )
+
+        ch = interaction.channel
+        if isinstance(ch, discord.TextChannel):
+            await send_long(ch, report)
+            await interaction.followup.send(
+                f"Validation complete for {len(codes_to_check)} discipline(s) — see above.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(report, ephemeral=True)
 
 
 def run() -> None:

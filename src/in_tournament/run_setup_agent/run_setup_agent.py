@@ -413,6 +413,194 @@ def finish_setup(ctx: RunContext[SetupDeps]) -> str:
     return RUN_SETUP_COMPLETE.get(lang, RUN_SETUP_COMPLETE["EN"])
 
 
+# ── Validation helpers ─────────────────────────────────────────────────────────
+
+def _disc_code_from_dict(d: dict) -> str:
+    """Reconstruct the discipline string (e.g. 'LS', 'SAW', 'Plastic LS') from a HemaDiscipline dict."""
+    weapon = d.get("weapon", "")
+    gender = d.get("gender", "")
+    material = d.get("material", "")
+    mat = material if material and material not in ("", "Steel") else ""
+    gen = gender if gender in ("M", "W") else ""
+    return (mat + " " if mat else "") + weapon + gen
+
+
+def _do_validate_discipline(
+    discipline_code: str,
+    user_config_path: Path,
+    data_root: Path | None = None,
+) -> str:
+    """Validate that pool sheet fencers match the tournament roster for one discipline.
+
+    Reads the enrolled roster from fencers_deduped.json (pre-tournament output),
+    opens the discipline's data sheet, and compares all fencer names found in any
+    worksheet column called 'Name' against the roster.
+
+    Returns a human-readable Discord-formatted report string.
+    """
+    from collections import Counter
+
+    # ── Load user config ────────────────────────────────────────────────────────
+    user_cfg: dict = {}
+    if user_config_path.exists():
+        try:
+            with open(user_config_path) as f:
+                user_cfg = json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            return "❌ Could not load user config"
+
+    sheet_url: str | None = user_cfg.get("data_sheet_urls", {}).get(discipline_code)
+    if not sheet_url:
+        return (
+            f"❌ **{discipline_code}**: no data sheet URL configured — "
+            "run `create_data_sheets` in #setup first"
+        )
+
+    tournament_name: str = user_cfg.get("tournament_name", "")
+    disc_name: str = user_cfg.get("disciplines", {}).get(discipline_code, discipline_code)
+
+    # ── Load roster from fencers_deduped.json ───────────────────────────────────
+    agent_config = load_agent_config()
+    if data_root is None:
+        data_root = Path(agent_config.reg_agent.data_root_dir)
+
+    deduped_path = data_root / tournament_name / "fencers_deduped.json"
+    if not deduped_path.exists():
+        return (
+            f"❌ **{discipline_code}**: roster file not found at `{deduped_path}` — "
+            "complete the pre-tournament registration phase first"
+        )
+
+    try:
+        raw_fencers: list[dict] = json.loads(deduped_path.read_text())
+    except (json.JSONDecodeError, ValueError) as e:
+        return f"❌ **{discipline_code}**: could not parse roster file — {e}"
+
+    roster_names: list[str] = []
+    for fencer in raw_fencers:
+        for disc in fencer.get("disciplines", []):
+            if _disc_code_from_dict(disc) == discipline_code:
+                roster_names.append(fencer["name"])
+                break
+
+    if not roster_names:
+        return (
+            f"⚠ **{discipline_code}** — {disc_name}: "
+            "no fencers found in roster for this discipline code"
+        )
+
+    # ── Open Google Sheet ───────────────────────────────────────────────────────
+    try:
+        import gspread
+        gc = gspread.service_account(filename=agent_config.reg_agent.creds_path)
+        sh = gc.open_by_url(sheet_url)
+    except Exception as e:
+        return f"❌ **{discipline_code}**: could not open data sheet — {e}"
+
+    # ── Collect fencer names from worksheets that have a 'Name' column ──────────
+    # Each entry: (original_name_from_sheet, worksheet_title)
+    sheet_entries: list[tuple[str, str]] = []
+    for ws in sh.worksheets():
+        rows = ws.get_all_values()
+        if not rows:
+            continue
+        header = [h.strip().lower() for h in rows[0]]
+        if "name" not in header:
+            continue
+        col_idx = header.index("name")
+        for row in rows[1:]:
+            if col_idx < len(row):
+                raw = row[col_idx].strip()
+                if raw:
+                    sheet_entries.append((raw, ws.title))
+
+    if not sheet_entries:
+        return (
+            f"⚠ **{discipline_code}** — {disc_name}: "
+            "no 'Name' column found in any worksheet — "
+            "verify the data sheet follows the expected template format"
+        )
+
+    # ── Compare (case-insensitive) ──────────────────────────────────────────────
+    lower_counts: Counter[str] = Counter(name.lower() for name, _ in sheet_entries)
+    sheet_lower_set = set(lower_counts.keys())
+    roster_lower_set = {n.lower() for n in roster_names}
+
+    # Recover original casing for readable output
+    lower_to_roster = {n.lower(): n for n in roster_names}
+    lower_to_sheet = {raw.lower(): raw for raw, _ in sheet_entries}
+
+    missing = sorted(lower_to_roster[k] for k in (roster_lower_set - sheet_lower_set))
+    extra   = sorted(lower_to_sheet[k]  for k in (sheet_lower_set - roster_lower_set))
+
+    # Duplicates: names appearing more than once across the sheet
+    dup_names: dict[str, list[str]] = {}
+    for raw, ws_title in sheet_entries:
+        if lower_counts[raw.lower()] > 1:
+            dup_names.setdefault(raw, []).append(ws_title)
+
+    # ── Build report ────────────────────────────────────────────────────────────
+    lines = [f"**{discipline_code} — {disc_name}**"]
+
+    if not missing and not extra and not dup_names:
+        lines.append(f"✅ {len(roster_names)} fencers — roster matches sheet perfectly")
+    else:
+        lines.append(
+            f"Roster: **{len(roster_names)}** | Sheet: **{len(sheet_lower_set)} unique**"
+        )
+        if missing:
+            lines.append(f"❌ Missing from sheet ({len(missing)}): {', '.join(missing)}")
+        if extra:
+            lines.append(f"❌ Extra in sheet ({len(extra)}): {', '.join(extra)}")
+        for name, ws_list in sorted(dup_names.items()):
+            unique_sheets = sorted(set(ws_list))
+            lines.append(
+                f"⚠ Duplicate: **{name}** "
+                f"(appears {len(ws_list)}×, in: {', '.join(unique_sheets)})"
+            )
+
+    return "\n".join(lines)
+
+
+def _do_validate_disciplines(
+    discipline_codes: list[str],
+    user_config_path: Path,
+    data_root: Path | None = None,
+) -> str:
+    """Validate one or more disciplines and return a combined report."""
+    parts = [
+        _do_validate_discipline(code, user_config_path, data_root)
+        for code in discipline_codes
+    ]
+    return "\n\n".join(parts)
+
+
+@setup_agent.tool
+def validate_discipline_sheets(ctx: RunContext[SetupDeps]) -> str:
+    """Validate all discipline data sheets against the tournament roster.
+
+    Reads each discipline's Google Sheet and checks that every fencer enrolled
+    in that discipline (from fencers_deduped.json) appears exactly once in the
+    sheet, with no missing, extra, or duplicate names.
+
+    Returns a per-discipline validation report. Call this after the organiser
+    confirms they have finished filling in the data sheets.
+    """
+    user_cfg: dict = {}
+    if ctx.deps.user_config_path.exists():
+        try:
+            with open(ctx.deps.user_config_path) as f:
+                user_cfg = json.load(f)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    codes = list(user_cfg.get("disciplines", {}).keys())
+    if not codes:
+        return "No disciplines configured — run save_disciplines first."
+
+    return _do_validate_disciplines(codes, ctx.deps.user_config_path, ctx.deps.data_root)
+
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 async def _build_prompt(channel: discord.TextChannel, new_message_content: str) -> str:
