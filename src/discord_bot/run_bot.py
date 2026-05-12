@@ -318,25 +318,45 @@ _SUPPORTED_LANGS = ["EN", "CS", "DE", "FR", "ES", "IT", "PL", "SK", "HU", "RU"]
 
 
 async def _wipe_guild_channels(guild: discord.Guild) -> None:
-    """Delete all threads and purge all messages in every text channel."""
+    """Delete all threads and all messages in every text channel."""
+    log.info("wipe_guild_channels: starting for guild %s (%d text channels)", guild.name, len(guild.text_channels))
     for channel in guild.text_channels:
+        log.info("wipe: processing #%s", channel.name)
+        thread_count = 0
         for thread in list(channel.threads):
             try:
                 await thread.delete()
-            except discord.HTTPException:
-                pass
+                thread_count += 1
+            except discord.HTTPException as e:
+                log.warning("wipe: failed to delete thread %s in #%s: %s", thread.name, channel.name, e)
         try:
             async for thread in channel.archived_threads(limit=None):
                 try:
                     await thread.delete()
-                except discord.HTTPException:
-                    pass
-        except discord.HTTPException:
-            pass
+                    thread_count += 1
+                except discord.HTTPException as e:
+                    log.warning("wipe: failed to delete archived thread %s in #%s: %s", thread.name, channel.name, e)
+        except discord.HTTPException as e:
+            log.warning("wipe: failed to list archived threads in #%s: %s", channel.name, e)
+        if thread_count:
+            log.info("wipe: deleted %d thread(s) from #%s", thread_count, channel.name)
+        # Bulk-delete recent messages (Discord rejects messages older than 14 days
+        # in bulk-delete — purge() silently skips them, so we also do a one-by-one pass).
         try:
-            await channel.purge(limit=None)
-        except discord.HTTPException:
-            pass
+            deleted = await channel.purge(limit=None)
+            log.info("wipe: bulk-purged %d message(s) from #%s", len(deleted), channel.name)
+        except discord.HTTPException as e:
+            log.warning("wipe: purge failed for #%s: %s", channel.name, e)
+        remaining = 0
+        async for msg in channel.history(limit=None):
+            try:
+                await msg.delete()
+                remaining += 1
+            except discord.HTTPException as e:
+                log.warning("wipe: failed to delete message %s in #%s: %s", msg.id, channel.name, e)
+        if remaining:
+            log.info("wipe: deleted %d old message(s) one-by-one from #%s", remaining, channel.name)
+    log.info("wipe_guild_channels: done")
 
 
 class _TournamentConfigModal(discord.ui.Modal, title="Tournament Configuration"):
@@ -363,7 +383,15 @@ class _TournamentConfigModal(discord.ui.Modal, title="Tournament Configuration")
         super().__init__()
         self._cog = cog
 
+    async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
+        log.exception("TournamentConfigModal.on_error: %s", error)
+        try:
+            await interaction.response.send_message(f"Unexpected error: {error}", ephemeral=True)
+        except discord.HTTPException:
+            pass
+
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        log.info("configure modal submitted by %s (guild=%s)", interaction.user, interaction.guild)
         name = self.tournament_name.value.strip()
         lang = self.language.value.strip().upper()
         disc_str = self.disciplines.value
@@ -434,6 +462,7 @@ class SetupCommandsCog(commands.Cog):
     )
     @app_commands.default_permissions(manage_guild=True)
     async def configure(self, interaction: discord.Interaction) -> None:
+        log.info("/configure invoked by %s in guild %s", interaction.user, interaction.guild)
         if interaction.guild is None:
             await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
             return
