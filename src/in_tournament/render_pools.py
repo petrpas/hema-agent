@@ -31,10 +31,10 @@ def _escape_typst(s: str) -> str:
     return s
 
 
-def _abbrev(name: str, max_len: int = 12) -> str:
-    """Return the last name, truncated, for the score-grid column header."""
+def _abbrev(name: str) -> str:
+    """Return initials for the score-grid column header (e.g. 'John Smith' → 'J.S.')."""
     parts = name.strip().split()
-    return (parts[-1] if parts else name)[:max_len]
+    return "".join(p[0].upper() for p in parts if p) if parts else name
 
 
 
