@@ -22,7 +22,8 @@ dependencies = [
     "typst>=0.14",
     "scipy>=1.13",
     "numpy>=2.0",
-    "qrcode[pil]>=8.0"
+    "qrcode[pil]>=8.0",
+    "pypdf>=4.0"
 ]
 
 [tool.setuptools.packages.find]

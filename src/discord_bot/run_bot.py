@@ -611,7 +611,7 @@ class SetupCommandsCog(commands.Cog):
         rendered: list[str] = []
         for code in codes:
             try:
-                pdfs: list[tuple[str, bytes]] = await asyncio.to_thread(
+                filename, pdf_bytes = await asyncio.to_thread(
                     render_pools_for_disc, code, user_config
                 )
             except ValueError as e:
@@ -637,12 +637,11 @@ class SetupCommandsCog(commands.Cog):
                     auto_archive_duration=10080,  # 1 week
                 )
 
-            files = [
-                discord.File(io.BytesIO(pdf_bytes), filename=filename)
-                for filename, pdf_bytes in pdfs
-            ]
             disc_name = DISCIPLINE_NAMES[code]
-            await thread.send(f"**{code}** — {disc_name} ({len(pdfs)} pool(s))", files=files)
+            await thread.send(
+                f"**{code}** — {disc_name}",
+                files=[discord.File(io.BytesIO(pdf_bytes), filename=filename)],
+            )
             rendered.append(f"**{code}** → {thread_name}")
 
         if rendered:
@@ -675,7 +674,7 @@ class SetupCommandsCog(commands.Cog):
 
         user_config = self._user_config_path()
         try:
-            pdfs: list[tuple[str, bytes]] = await asyncio.to_thread(
+            filename, pdf_bytes = await asyncio.to_thread(
                 render_pools_for_disc, disc, user_config
             )
         except ValueError as e:
@@ -708,15 +707,14 @@ class SetupCommandsCog(commands.Cog):
                 auto_archive_duration=10080,  # 1 week
             )
 
-        files = [
-            discord.File(io.BytesIO(pdf_bytes), filename=filename)
-            for filename, pdf_bytes in pdfs
-        ]
         disc_name = DISCIPLINE_NAMES[disc]
-        await thread.send(f"**{disc}** — {disc_name} ({len(pdfs)} pool(s))", files=files)
+        await thread.send(
+            f"**{disc}** — {disc_name}",
+            files=[discord.File(io.BytesIO(pdf_bytes), filename=filename)],
+        )
 
         await interaction.followup.send(
-            f"Published {len(pdfs)} pool table(s) for **{disc}** — "
+            f"Published pool tables for **{disc}** — "
             f"see **{thread_name}** thread in #{ANNOUNCEMENTS_CHANNEL}.",
             ephemeral=True,
         )

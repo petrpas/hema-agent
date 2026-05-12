@@ -2,11 +2,11 @@
 
 Reads pool assignments from the per-discipline Google Sheet (one worksheet
 per pool, each with a 'Name' column), fills the pool_table_N.typ Typst
-template, and compiles it to a PDF.
+template, compiles each pool to a PDF, and concatenates them into one file.
 
 Entry point:
-    render_pools_for_disc(disc_code, user_config_path) -> list[tuple[str, bytes]]
-    Returns (filename, pdf_bytes) pairs, one per pool, sorted by pool number.
+    render_pools_for_disc(disc_code, user_config_path) -> tuple[str, bytes]
+    Returns (filename, pdf_bytes) for the merged PDF of all pools.
 """
 
 import json
@@ -35,6 +35,17 @@ def _abbrev(name: str) -> str:
     """Return initials for the score-grid column header (e.g. 'John Smith' → 'J.S.')."""
     parts = name.strip().split()
     return "".join(p[0].upper() for p in parts if p) if parts else name
+
+
+def _merge_pdfs(pdf_list: list[bytes]) -> bytes:
+    import io
+    from pypdf import PdfWriter
+    writer = PdfWriter()
+    for pdf_bytes in pdf_list:
+        writer.append(io.BytesIO(pdf_bytes))
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
 
 
 
@@ -117,12 +128,12 @@ def _render_one_pdf(
 def render_pools_for_disc(
     disc_code: str,
     user_config_path: Path,
-) -> list[tuple[str, bytes]]:
-    """Render pool table PDFs for one discipline.
+) -> tuple[str, bytes]:
+    """Render pool table PDFs for one discipline and merge them into one file.
 
     Reads pool assignments from the configured Google Sheet, renders one PDF
-    per pool using the matching pool_table_N.typ template, and returns a list
-    of (filename, pdf_bytes) pairs ordered by pool number.
+    per pool using the matching pool_table_N.typ template, concatenates them,
+    and returns (filename, pdf_bytes) for the merged PDF.
 
     Raises ValueError if the sheet URL is not configured, no pools are found,
     or no pools could be rendered (e.g. unsupported sizes).
@@ -157,19 +168,22 @@ def render_pools_for_disc(
             "each pool must be a separate worksheet with a 'Name' column"
         )
 
-    results: list[tuple[str, bytes]] = []
+    rendered: list[bytes] = []
     for pool_no, names in pools:
         try:
             pdf = _render_one_pdf(pool_no, names, tournament, discipline)
-            filename = f"{disc_code}_pool_{pool_no}.pdf"
-            results.append((filename, pdf))
-            log.info("Rendered %s (%d fencers)", filename, len(names))
+            rendered.append(pdf)
+            log.info("Rendered %s pool %d (%d fencers)", disc_code, pool_no, len(names))
         except ValueError as e:
             log.warning("Skipping pool %d of %s: %s", pool_no, disc_code, e)
 
-    if not results:
+    if not rendered:
         raise ValueError(
             f"No pools could be rendered for {disc_code} — "
             "check that each pool has 4–8 fencers"
         )
-    return results
+
+    merged = _merge_pdfs(rendered)
+    filename = f"{disc_code}_pools.pdf"
+    log.info("Merged %d pool(s) into %s", len(rendered), filename)
+    return filename, merged
