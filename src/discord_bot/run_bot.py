@@ -42,7 +42,7 @@ from in_tournament.run_setup_agent.run_setup_agent import (
     _DEFAULT_USER_CONFIG,
     _do_configure_tournament,
     _do_create_data_sheets,
-    _do_validate_disciplines,
+    _do_validate_discipline,
     RUN_SETUP_WELCOME,
     run_run_setup_agent,
 )
@@ -530,19 +530,39 @@ class SetupCommandsCog(commands.Cog):
         else:
             data_root = Path(load_agent_config().reg_agent.data_root_dir)
 
-        report = await asyncio.to_thread(
-            _do_validate_disciplines, codes_to_check, user_config, data_root
-        )
+        setup_ch = discord.utils.get(interaction.guild.text_channels, name=SETUP_CHANNEL)
+        if setup_ch is None:
+            await interaction.followup.send("❌ #setup channel not found.", ephemeral=True)
+            return
 
-        ch = interaction.channel
-        if isinstance(ch, discord.TextChannel):
-            await send_long(ch, report)
-            await interaction.followup.send(
-                f"Validation complete for {len(codes_to_check)} discipline(s) — see above.",
-                ephemeral=True,
+        posted: list[str] = []
+        for code in codes_to_check:
+            report = await asyncio.to_thread(
+                _do_validate_discipline, code, user_config, data_root
             )
-        else:
-            await interaction.followup.send(report, ephemeral=True)
+
+            thread_name = f"{code}_pools_validation"
+            thread = discord.utils.get(setup_ch.threads, name=thread_name)
+            if thread is None:
+                async for t in setup_ch.archived_threads(limit=50):
+                    if t.name == thread_name:
+                        await t.unarchive()
+                        thread = t
+                        break
+            if thread is None:
+                thread = await setup_ch.create_thread(
+                    name=thread_name,
+                    type=discord.ChannelType.public_thread,
+                    auto_archive_duration=10080,
+                )
+
+            await send_long(thread, report)
+            posted.append(f"**{code}** → {thread_name}")
+
+        await interaction.followup.send(
+            f"Validation complete — results posted to: {', '.join(posted)} in #{SETUP_CHANNEL}.",
+            ephemeral=True,
+        )
 
     @app_commands.command(
         name="render_pools",

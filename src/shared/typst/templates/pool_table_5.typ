@@ -40,8 +40,8 @@
 
 #table(
   align: (left, center, center, center, center, center, center, center, center, center),
-  columns: (4fr, 1.5fr, 1.5fr, 1.5fr, 1.5fr, 1.5fr, 1fr, 1fr, 1fr, 1fr),
-  inset: (y: 10pt),
+  columns: (6fr, 1.25fr, 1.25fr, 1.25fr, 1.25fr, 1.25fr, 1fr, 1fr, 1fr, 1fr),
+  inset: (top: 10pt, bottom: 10pt),
   table.header(
     table.cell(align: center, [*Fencer*]),
     table.cell(align: center, [*{{f1}}*]),
@@ -60,6 +60,8 @@
   box(width: 100%, height: 0.85em, clip: true)[#nowrap[{{fencer_4}}]], [],[],[],[-----],[],[],[],[],[],
   box(width: 100%, height: 0.85em, clip: true)[#nowrap[{{fencer_5}}]], [],[],[],[],[-----],[],[],[],[],
 )
+#v(-0.8em)
+#align(right)[#text(size: 8pt)[Fencers should sign the results after the pool is finished. #h(1fr) Win -- matches won, TS -- touches scored, TR -- touches recieved, Idx = TS $-$ TR]]
 
 #v(2em)
 
@@ -77,7 +79,7 @@
 #table(
   align: (center, left, left, center, center, center),
   columns: (4em, 4fr, 4fr, 1.5fr, 3fr),
-  inset: (y: 10pt),
+  inset: (top: 10pt, bottom: 10pt),
   table.header(
     table.cell(align: center, [*Match*]),
     table.cell(align: center, [*Fencer Left*]),

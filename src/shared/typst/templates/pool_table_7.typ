@@ -1,5 +1,5 @@
-#set page(paper:"a4", margin: 1cm)
-#set text(font: "GFS Neohellenic", size: 14pt)
+#set page(paper:"a4", margin: 1.25cm)
+#set text(font: "GFS Neohellenic", size: 13pt)
 
 #show table.header: set text(weight: "bold")
 
@@ -38,7 +38,7 @@
 
 #table(
   align: (left, center, center, center, center, center, center, center, center, center, center, center),
-  columns: (4fr, 1.5fr, 1.5fr, 1.5fr, 1.5fr, 1.5fr, 1.5fr, 1.5fr, 1fr, 1fr, 1fr, 1fr),
+  columns: (6fr, 1.25fr, 1.25fr, 1.25fr, 1.25fr, 1.25fr, 1.25fr, 1.25fr, 1fr, 1fr, 1fr, 1fr),
   inset: (top: 7pt, bottom: 7pt),
   table.header(
     table.cell(align: center, [*Fencer*]),
@@ -62,6 +62,8 @@
   box(width: 100%, height: 0.85em, clip: true)[#nowrap[{{fencer_6}}]], [],[],[],[],[],[-----],[],[],[],[],[],
   box(width: 100%, height: 0.85em, clip: true)[#nowrap[{{fencer_7}}]], [],[],[],[],[],[],[-----],[],[],[],[],
 )
+#v(-0.8em)
+#align(right)[#text(size: 8pt)[Fencers should sign the results after the pool is finished. #h(1fr) Win -- matches won, TS -- touches scored, TR -- touches recieved, Idx = TS $-$ TR]]
 
 == Matches
 

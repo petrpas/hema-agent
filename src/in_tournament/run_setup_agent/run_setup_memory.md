@@ -1,5 +1,12 @@
 - [2026-05-03 21:49 UTC] Preferred language: CS. ALWAYS use CS when writing messages to the organiser. Internal reasoning, tool call arguments, and all other agent outputs remain in English.
-- [2026-05-03 21:51 UTC] Tournament name: Na Duel! 2026
+  - [2026-05-03 21:51 UTC] Tournament name: Na Duel! 2026
 - [2026-05-03 21:58 UTC] Tournament name: Na Duel! 2026
 - [2026-05-03 22:16 UTC] Preferred language: EN. ALWAYS use EN when writing messages to the organiser. Internal reasoning, tool call arguments, and all other agent outputs remain in English.
 - [2026-05-03 22:17 UTC] Tournament name: Na Duel! 2026
+- [2026-05-12 18:27 UTC] Preferred language: CS. ALWAYS use CS when writing messages to the organiser. Internal reasoning, tool call arguments, and all other agent outputs remain in English.
+- [2026-05-12 18:57 UTC] Tournament name: Na Duel! 2026
+- [2026-05-12 19:08 UTC] Tournament name: Na Duel! 2026
+- [2026-05-12 19:26 UTC] Tournament: Na Duel! 2026 | Language: EN | Disciplines: SA, SB
+- [2026-05-12 19:34 UTC] Tournament: Bruner Stich 2026 | Language: EN | Disciplines: LSM, LSW
+- [2026-05-12 19:39 UTC] Tournament: Bruner Stich 2026 | Language: EN | Disciplines: LSM, LSW
+- [2026-05-12 19:41 UTC] Tournament: Bruner Stich 2026 | Language: EN | Disciplines: LSM, LSW

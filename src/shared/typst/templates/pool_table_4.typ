@@ -58,6 +58,8 @@
   box(width: 100%, height: 0.85em, clip: true)[#nowrap[{{fencer_3}}]], [],[],[-----],[],[],[],[],[],
   box(width: 100%, height: 0.85em, clip: true)[#nowrap[{{fencer_4}}]], [],[],[],[-----],[],[],[],[],
 )
+#v(-0.8em)
+#align(right)[#text(size: 8pt)[Fencers should sign the results after the pool is finished. #h(1fr) Win -- matches won, TS -- touches scored, TR -- touches recieved, Idx = TS $-$ TR]]
 
 #v(2em)
 

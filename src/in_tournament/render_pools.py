@@ -37,46 +37,44 @@ def _abbrev(name: str, max_len: int = 12) -> str:
     return (parts[-1] if parts else name)[:max_len]
 
 
-def _pool_number(title: str, fallback: int) -> int:
-    """Extract the first integer from a worksheet title, or use fallback."""
-    m = re.search(r"\d+", title)
-    return int(m.group()) if m else fallback
-
 
 # ── Sheet reading ──────────────────────────────────────────────────────────────
 
 def _read_pools_from_sheet(sheet_url: str, creds_path: str) -> list[tuple[int, list[str]]]:
-    """Return [(pool_no, [fencer_names])] from the discipline's Google Sheet.
+    """Return [(pool_no, [fencer_names])] from the 'Pool standings' worksheet.
 
-    A worksheet is treated as a pool if it has a 'Name' column header in row 1
-    and at least one non-empty fencer row beneath it. Worksheets are sorted by
-    title; pool number is parsed from the title (first digit run) or assigned
-    sequentially.
+    The worksheet has columns: Fencers | Pool 1 | Pool 2 | …
+    Each 'Pool N' column lists fencers in that pool. Pool number is parsed from
+    the column header; columns are returned in ascending pool-number order.
     """
     import gspread
     gc = gspread.service_account(filename=creds_path)
     sh = gc.open_by_url(sheet_url)
 
-    candidates: list[tuple[str, list[str]]] = []
-    for ws in sh.worksheets():
-        rows = ws.get_all_values()
-        if not rows:
+    pool_ws = next(
+        (ws for ws in sh.worksheets() if ws.title.strip().lower() == "pool standings"),
+        None,
+    )
+    if pool_ws is None:
+        return []
+
+    rows = pool_ws.get_all_values()
+    if not rows:
+        return []
+
+    header = [h.strip() for h in rows[0]]
+    candidates: list[tuple[int, list[str]]] = []
+    for i, h in enumerate(header):
+        m = re.match(r"pool\s*(\d+)", h, re.IGNORECASE)
+        if not m:
             continue
-        header = [h.strip().lower() for h in rows[0]]
-        if "name" not in header:
-            continue
-        col = header.index("name")
-        names = [r[col].strip() for r in rows[1:] if col < len(r) and r[col].strip()]
+        pool_no = int(m.group(1))
+        names = [row[i].strip() for row in rows[1:] if i < len(row) and row[i].strip()]
         if names:
-            candidates.append((ws.title, names))
+            candidates.append((pool_no, names))
 
-    # Sort worksheets by their numeric component first, then alphabetically
-    candidates.sort(key=lambda t: (_pool_number(t[0], 9999), t[0]))
-
-    return [
-        (_pool_number(title, i), names)
-        for i, (title, names) in enumerate(candidates, start=1)
-    ]
+    candidates.sort(key=lambda t: t[0])
+    return candidates
 
 
 # ── Typst rendering ────────────────────────────────────────────────────────────

@@ -467,11 +467,11 @@ def _do_validate_discipline(
     user_config_path: Path,
     data_root: Path | None = None,
 ) -> str:
-    """Validate that pool sheet fencers match the tournament roster for one discipline.
+    """Validate that pool worksheet fencers match the Fencers tab for one discipline.
 
-    Reads the enrolled roster from fencers_deduped.json (pre-tournament output),
-    opens the discipline's data sheet, and compares all fencer names found in any
-    worksheet column called 'Name' against the roster.
+    Opens the discipline's data sheet, reads the roster from the 'Fencers'
+    worksheet, and compares it against all fencer names found in pool worksheets
+    (every other worksheet that has a 'Name' column).
 
     Returns a human-readable Discord-formatted report string.
     """
@@ -493,40 +493,10 @@ def _do_validate_discipline(
             "run `create_data_sheets` in #setup first"
         )
 
-    tournament_name: str = user_cfg.get("tournament_name", "")
     disc_name: str = user_cfg.get("disciplines", {}).get(discipline_code, discipline_code)
 
-    # ── Load roster from fencers_deduped.json ───────────────────────────────────
-    agent_config = load_agent_config()
-    if data_root is None:
-        data_root = Path(agent_config.reg_agent.data_root_dir)
-
-    deduped_path = data_root / tournament_name / "fencers_deduped.json"
-    if not deduped_path.exists():
-        return (
-            f"❌ **{discipline_code}**: roster file not found at `{deduped_path}` — "
-            "complete the pre-tournament registration phase first"
-        )
-
-    try:
-        raw_fencers: list[dict] = json.loads(deduped_path.read_text())
-    except (json.JSONDecodeError, ValueError) as e:
-        return f"❌ **{discipline_code}**: could not parse roster file — {e}"
-
-    roster_names: list[str] = []
-    for fencer in raw_fencers:
-        for disc in fencer.get("disciplines", []):
-            if _disc_code_from_dict(disc) == discipline_code:
-                roster_names.append(fencer["name"])
-                break
-
-    if not roster_names:
-        return (
-            f"⚠ **{discipline_code}** — {disc_name}: "
-            "no fencers found in roster for this discipline code"
-        )
-
     # ── Open Google Sheet ───────────────────────────────────────────────────────
+    agent_config = load_agent_config()
     try:
         import gspread
         gc = gspread.service_account(filename=agent_config.reg_agent.creds_path)
@@ -534,28 +504,82 @@ def _do_validate_discipline(
     except Exception as e:
         return f"❌ **{discipline_code}**: could not open data sheet — {e}"
 
-    # ── Collect fencer names from worksheets that have a 'Name' column ──────────
-    # Each entry: (original_name_from_sheet, worksheet_title)
+    # ── Read roster from the 'Fencers' worksheet ─────────────────────────────────
+    fencer_ws = next(
+        (ws for ws in sh.worksheets() if ws.title.strip().lower() == "fencers"),
+        None,
+    )
+    if fencer_ws is None:
+        return (
+            f"❌ **{discipline_code}**: no 'Fencers' worksheet found in the data sheet — "
+            "add a worksheet named 'Fencers' with a 'Name' column listing enrolled fencers"
+        )
+
+    fencer_rows = fencer_ws.get_all_values()
+    if not fencer_rows:
+        return f"❌ **{discipline_code}**: 'Fencers' worksheet is empty"
+
+    fencer_header = [h.strip().lower() for h in fencer_rows[0]]
+    if "name" not in fencer_header:
+        return f"❌ **{discipline_code}**: 'Fencers' worksheet has no 'Name' column"
+
+    fname_col = fencer_header.index("name")
+    roster_names: list[str] = [
+        row[fname_col].strip()
+        for row in fencer_rows[1:]
+        if fname_col < len(row) and row[fname_col].strip()
+    ]
+
+    if not roster_names:
+        return (
+            f"⚠ **{discipline_code}** — {disc_name}: "
+            "'Fencers' worksheet has no fencer names"
+        )
+
+    # ── Collect fencer names from 'Pool standings' worksheet ─────────────────────
+    # The worksheet has columns: Fencers | Pool 1 | Pool 2 | …
+    # Each "Pool N" column lists the fencers assigned to that pool.
+    # Each entry: (original_name, pool_column_header)
+    pool_ws = next(
+        (ws for ws in sh.worksheets() if ws.title.strip().lower() == "pool standings"),
+        None,
+    )
+    if pool_ws is None:
+        return (
+            f"⚠ **{discipline_code}** — {disc_name}: "
+            "no 'Pool standings' worksheet found in the data sheet"
+        )
+
+    pool_rows = pool_ws.get_all_values()
+    if not pool_rows:
+        return (
+            f"⚠ **{discipline_code}** — {disc_name}: "
+            "'Pool standings' worksheet is empty"
+        )
+
+    pool_header = [h.strip() for h in pool_rows[0]]
+    pool_cols = [
+        (i, h) for i, h in enumerate(pool_header)
+        if re.match(r"pool\s*\d+", h, re.IGNORECASE)
+    ]
+    if not pool_cols:
+        return (
+            f"⚠ **{discipline_code}** — {disc_name}: "
+            "no 'Pool N' columns found in 'Pool standings' worksheet"
+        )
+
     sheet_entries: list[tuple[str, str]] = []
-    for ws in sh.worksheets():
-        rows = ws.get_all_values()
-        if not rows:
-            continue
-        header = [h.strip().lower() for h in rows[0]]
-        if "name" not in header:
-            continue
-        col_idx = header.index("name")
-        for row in rows[1:]:
+    for col_idx, col_name in pool_cols:
+        for row in pool_rows[1:]:
             if col_idx < len(row):
                 raw = row[col_idx].strip()
                 if raw:
-                    sheet_entries.append((raw, ws.title))
+                    sheet_entries.append((raw, col_name))
 
     if not sheet_entries:
         return (
             f"⚠ **{discipline_code}** — {disc_name}: "
-            "no 'Name' column found in any worksheet — "
-            "verify the data sheet follows the expected template format"
+            "no fencer names found in pool columns of 'Pool standings'"
         )
 
     # ── Compare (case-insensitive) ──────────────────────────────────────────────
