@@ -1,4 +1,4 @@
-#set page(margin: 2em, width: 540pt, height: auto)
+#set page(paper:"a4", margin: 1.25cm)
 #set text(font: "GFS Neohellenic", size: 14pt)
 
 #show table.header: set text(weight: "bold")
@@ -9,7 +9,7 @@
   scope: "parent",
   float: true,
   text(1.4em, weight: "bold")[
-    {{tournament_name}} Pools {{discipline_name}}
+    {{tournament_name}} #h(2cm) {{discipline_name}} -- Pools
   ],
 )
 

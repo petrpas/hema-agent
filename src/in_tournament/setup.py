@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -36,6 +37,10 @@ from in_tournament.server_layout import (
 log = logging.getLogger(__name__)
 
 INVITES_FILE = "invites.json"
+
+_SHARED_DIR  = Path(__file__).parent.parent / "shared"
+_QR_TEMPLATE = _SHARED_DIR / "typst" / "templates" / "qr.typ"
+_FONTS_DIR   = _SHARED_DIR / "typst" / "fonts"
 
 
 # ── Public types ──────────────────────────────────────────────────────────────
@@ -261,6 +266,36 @@ def _write_qr(url: str, out_path: Path, role_name: str = "") -> Path:
     img = qr.make_image(fill_color=fill_color, back_color="white")
     img.save(out_path)
     return out_path
+
+
+def render_qr_pdf(png_path: Path, tournament_name: str) -> Path:
+    """Render a QR poster PDF from qr.typ alongside an existing QR PNG.
+
+    Writes <png_path.stem>.pdf next to the PNG and returns the path.
+    The temp source file is written into the same directory so that
+    Typst resolves `image("<png_path.name>")` correctly.
+    """
+    import typst
+
+    source = (
+        _QR_TEMPLATE.read_text(encoding="utf-8")
+        .replace("{{tournament_name}}", tournament_name)
+        .replace("{{qr_png}}", png_path.name)
+    )
+    out_pdf = png_path.with_suffix(".pdf")
+    with tempfile.NamedTemporaryFile(
+        suffix=".typ", mode="w", encoding="utf-8",
+        dir=png_path.parent, delete=False,
+    ) as f:
+        f.write(source)
+        tmp = Path(f.name)
+    try:
+        pdf_bytes = typst.compile(str(tmp), format="pdf", font_paths=[str(_FONTS_DIR)])
+        out_pdf.write_bytes(pdf_bytes)
+    finally:
+        tmp.unlink(missing_ok=True)
+    log.info("Rendered QR PDF: %s", out_pdf)
+    return out_pdf
 
 
 # ── Top-level entry point ─────────────────────────────────────────────────────

@@ -22,12 +22,12 @@ def _escape(s: str) -> str:
 
 
 def _col_count(num_pools: int) -> int:
-    """Smart column count: 1 pool → 1, even → 2, odd → 3."""
+    """Smart column count: 1 pool → 1, even < 10 → 2, odd or ≥ 10 → 3."""
     if num_pools <= 1:
         return 1
-    if num_pools % 2 == 0:
-        return 2
-    return 3
+    if num_pools >= 10 or num_pools % 2 != 0:
+        return 3
+    return 2
 
 
 def _build_pools_block(assignment: Assignment, pool_numbers: list[int] | None = None) -> str:

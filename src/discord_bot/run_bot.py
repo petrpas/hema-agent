@@ -36,13 +36,14 @@ from in_tournament.config import load_in_config, InConfig
 
 from discord_bot.discord_utils import send_long
 from in_tournament.msgs import read_msg as _read_in_msg
-from in_tournament.render_pools import render_pools_for_disc
+from in_tournament.render_pools import read_pools_for_disc, render_pools_for_disc, render_pools_list_for_disc
 from in_tournament.run_setup_agent.run_setup_agent import (
     DISCIPLINE_NAMES,
     _DEFAULT_USER_CONFIG,
     _do_configure_tournament,
     _do_create_data_sheets,
     _do_validate_discipline,
+    post_invite_qrs,
     RUN_SETUP_WELCOME,
     run_run_setup_agent,
 )
@@ -257,9 +258,7 @@ class ServerSetupCog(commands.Cog):
             if setup_ch is not None:
                 await send_long(setup_ch, RUN_SETUP_WELCOME)
 
-        msg = report.summary()
-        qr_files = [discord.File(p, filename=p.name) for p in report.qr_paths.values()]
-        await interaction.followup.send(msg, files=qr_files, ephemeral=True)
+        await interaction.followup.send(report.summary(), ephemeral=True)
 
 
 async def _typing_loop(channel: discord.TextChannel) -> None:
@@ -316,6 +315,26 @@ class SetupAgentCog(commands.Cog):
 
 _SUPPORTED_LANGS = ["EN", "CS", "DE", "FR", "ES", "IT", "PL", "SK", "HU", "RU"]
 
+_DISC_COLOUR_MAP: dict[str, int] = {
+    "LS":  0xED4245,  # red
+    "LSM": 0xED4245,  # red
+    "LSW": 0x992D22,  # dark red
+    "SA":  0x1F3A7A,  # navy
+    "SAM": 0x1F3A7A,  # navy
+    "SAW": 0x3498DB,  # blue
+    "SB":  0x57F287,  # green
+    "SBM": 0x57F287,  # green
+    "SBW": 0x1F8B4C,  # dark green
+    "RA":  0xFEE75C,  # yellow
+    "RAM": 0xFEE75C,  # yellow
+    "RAW": 0xE67E22,  # orange
+}
+_DISC_COLOUR_DEFAULT = 0x1ABC9C  # aqua
+
+
+def _disc_colour(disc_code: str) -> int:
+    return _DISC_COLOUR_MAP.get(disc_code, _DISC_COLOUR_DEFAULT)
+
 
 async def _wipe_guild_channels(guild: discord.Guild) -> None:
     """Delete all threads and all messages in every text channel."""
@@ -327,6 +346,13 @@ async def _wipe_guild_channels(guild: discord.Guild) -> None:
             try:
                 await thread.delete()
                 thread_count += 1
+            except discord.Forbidden:
+                try:
+                    await thread.edit(archived=True, locked=True)
+                    thread_count += 1
+                    log.info("wipe: archived (no delete perm) thread %s in #%s", thread.name, channel.name)
+                except discord.HTTPException as e2:
+                    log.warning("wipe: failed to archive thread %s in #%s: %s", thread.name, channel.name, e2)
             except discord.HTTPException as e:
                 log.warning("wipe: failed to delete thread %s in #%s: %s", thread.name, channel.name, e)
         try:
@@ -334,6 +360,8 @@ async def _wipe_guild_channels(guild: discord.Guild) -> None:
                 try:
                     await thread.delete()
                     thread_count += 1
+                except discord.Forbidden:
+                    log.info("wipe: skipping archived thread %s in #%s (no delete perm)", thread.name, channel.name)
                 except discord.HTTPException as e:
                     log.warning("wipe: failed to delete archived thread %s in #%s: %s", thread.name, channel.name, e)
         except discord.HTTPException as e:
@@ -440,6 +468,8 @@ class _TournamentConfigModal(discord.ui.Modal, title="Tournament Configuration")
                 interaction.guild,
                 f"Tournament configured:\n**Name:** {name}\n**Language:** {lang}\n**Disciplines:** {disc_list}",
             )
+            data_dir = run_bot_data_dir(self._cog._data_root(), interaction.guild.id)
+            await post_invite_qrs(interaction.guild, data_dir, name, lang)
         await interaction.followup.send("Configuration saved — see #setup.", ephemeral=True)
 
 
@@ -450,6 +480,11 @@ class SetupCommandsCog(commands.Cog):
     def _user_config_path(self) -> Path:
         env = os.environ.get("USER_CONFIG")
         return Path(env) if env else _DEFAULT_USER_CONFIG
+
+    def _data_root(self) -> Path:
+        if self.bot.config is not None:
+            return Path(self.bot.config.data_root_dir)
+        return Path(load_agent_config().reg_agent.data_root_dir)
 
     async def _post_setup(self, guild: discord.Guild, text: str) -> None:
         ch = discord.utils.get(guild.text_channels, name=SETUP_CHANNEL)
@@ -611,8 +646,11 @@ class SetupCommandsCog(commands.Cog):
         rendered: list[str] = []
         for code in codes:
             try:
-                pdfs: list[tuple[str, bytes]] = await asyncio.to_thread(
+                filename, pdf_bytes = await asyncio.to_thread(
                     render_pools_for_disc, code, user_config
+                )
+                list_filename, list_pdf_bytes = await asyncio.to_thread(
+                    render_pools_list_for_disc, code, user_config
                 )
             except ValueError as e:
                 await interaction.followup.send(f"❌ {code}: {e}", ephemeral=True)
@@ -637,12 +675,14 @@ class SetupCommandsCog(commands.Cog):
                     auto_archive_duration=10080,  # 1 week
                 )
 
-            files = [
-                discord.File(io.BytesIO(pdf_bytes), filename=filename)
-                for filename, pdf_bytes in pdfs
-            ]
             disc_name = DISCIPLINE_NAMES[code]
-            await thread.send(f"**{code}** — {disc_name} ({len(pdfs)} pool(s))", files=files)
+            await thread.send(
+                f"**{code}** — {disc_name}",
+                files=[
+                    discord.File(io.BytesIO(pdf_bytes), filename=filename),
+                    discord.File(io.BytesIO(list_pdf_bytes), filename=list_filename),
+                ],
+            )
             rendered.append(f"**{code}** → {thread_name}")
 
         if rendered:
@@ -675,9 +715,7 @@ class SetupCommandsCog(commands.Cog):
 
         user_config = self._user_config_path()
         try:
-            pdfs: list[tuple[str, bytes]] = await asyncio.to_thread(
-                render_pools_for_disc, disc, user_config
-            )
+            pools = await asyncio.to_thread(read_pools_for_disc, disc, user_config)
         except ValueError as e:
             await interaction.followup.send(f"❌ {e}", ephemeral=True)
             return
@@ -708,15 +746,24 @@ class SetupCommandsCog(commands.Cog):
                 auto_archive_duration=10080,  # 1 week
             )
 
-        files = [
-            discord.File(io.BytesIO(pdf_bytes), filename=filename)
-            for filename, pdf_bytes in pdfs
-        ]
+        colour = _disc_colour(disc)
         disc_name = DISCIPLINE_NAMES[disc]
-        await thread.send(f"**{disc}** — {disc_name} ({len(pdfs)} pool(s))", files=files)
+        embeds = [
+            discord.Embed(
+                title=f"Pool {pool_no}",
+                description="\n".join(
+                    f"{i}. {name}" for i, name in enumerate(names, 1)
+                ),
+                colour=colour,
+            )
+            for pool_no, names in pools
+        ]
+        # Discord allows max 10 embeds per message
+        for i in range(0, len(embeds), 10):
+            await thread.send(embeds=embeds[i : i + 10])
 
         await interaction.followup.send(
-            f"Published {len(pdfs)} pool table(s) for **{disc}** — "
+            f"Published {len(pools)} pool(s) for **{disc}** ({disc_name}) — "
             f"see **{thread_name}** thread in #{ANNOUNCEMENTS_CHANNEL}.",
             ephemeral=True,
         )

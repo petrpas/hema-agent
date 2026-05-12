@@ -374,6 +374,61 @@ def create_data_sheets(ctx: RunContext[SetupDeps]) -> str:
     return _do_create_data_sheets(ctx.deps.user_config_path)
 
 
+async def post_invite_qrs(
+    guild: discord.Guild,
+    data_dir: Path,
+    tournament_name: str,
+    lang: str,
+) -> list[str]:
+    """Post invite QR codes (PNG + PDF poster) to the appropriate channels.
+
+    Organizer QR → #org-internal, Guest QR → #announcements.
+    Returns a list of channel names that were posted to.
+    """
+    import asyncio
+    from in_tournament.setup import load_invite_map, render_qr_pdf
+    from in_tournament.server_layout import (
+        ANNOUNCEMENTS_CHANNEL, ORG_INTERNAL_CHANNEL, ROLE_GUEST, ROLE_ORGANIZER,
+    )
+
+    invite_map = load_invite_map(data_dir)
+    role_to_code = {v: k for k, v in invite_map.items()}
+
+    posted: list[str] = []
+    for role_name, channel_name, msg_key in [
+        (ROLE_ORGANIZER, ORG_INTERNAL_CHANNEL, "setup/org_invite"),
+        (ROLE_GUEST,     ANNOUNCEMENTS_CHANNEL, "setup/guest_invite"),
+    ]:
+        code = role_to_code.get(role_name)
+        if code is None:
+            continue
+        ch = discord.utils.get(guild.text_channels, name=channel_name)
+        if ch is None:
+            continue
+        url = f"https://discord.gg/{code}"
+        qr_path = data_dir / f"qr_{role_name.lower()}.png"
+        text = _render_msg(msg_key, {"url": url, "tournament_name": tournament_name}, lang)
+        try:
+            if qr_path.exists():
+                qr_pdf = await asyncio.to_thread(render_qr_pdf, qr_path, tournament_name)
+                await ch.send(text, files=[
+                    discord.File(qr_path, filename=qr_path.name),
+                    discord.File(qr_pdf, filename=qr_pdf.name),
+                ])
+            else:
+                await ch.send(text)
+        except discord.Forbidden:
+            log.warning("Missing send permission on #%s — posting text only", channel_name)
+            try:
+                await ch.send(text)
+            except discord.Forbidden:
+                log.error("No send permission at all on #%s — skipping", channel_name)
+                continue
+        posted.append(f"#{channel_name}")
+
+    return posted
+
+
 @setup_agent.tool
 async def publish_invite_links(ctx: RunContext[SetupDeps]) -> str:
     """Post QR codes and invite links to the right channels.
@@ -381,10 +436,7 @@ async def publish_invite_links(ctx: RunContext[SetupDeps]) -> str:
     Posts the Organizer invite to #org-internal and the Guest invite to #announcements,
     labelled with the tournament name. Call this before finish_setup.
     """
-    from in_tournament.setup import load_invite_map, run_bot_data_dir
-    from in_tournament.server_layout import (
-        ANNOUNCEMENTS_CHANNEL, ORG_INTERNAL_CHANNEL, ROLE_GUEST, ROLE_ORGANIZER,
-    )
+    from in_tournament.setup import run_bot_data_dir
 
     config: dict = {}
     if ctx.deps.user_config_path.exists():
@@ -398,36 +450,7 @@ async def publish_invite_links(ctx: RunContext[SetupDeps]) -> str:
     display_name = config.get("tournament_display_name") or config.get("tournament_name", "")
 
     data_dir = run_bot_data_dir(ctx.deps.data_root, ctx.deps.guild.id)
-    invite_map = load_invite_map(data_dir)          # {code: role_name}
-    role_to_code = {v: k for k, v in invite_map.items()}
-
-    posted: list[str] = []
-    for role_name, channel_name, msg_key in [
-        (ROLE_ORGANIZER, ORG_INTERNAL_CHANNEL, "setup/org_invite"),
-        (ROLE_GUEST,     ANNOUNCEMENTS_CHANNEL, "setup/guest_invite"),
-    ]:
-        code = role_to_code.get(role_name)
-        if code is None:
-            continue
-        ch = discord.utils.get(ctx.deps.guild.text_channels, name=channel_name)
-        if ch is None:
-            continue
-        url = f"https://discord.gg/{code}"
-        qr_path = data_dir / f"qr_{role_name.lower()}.png"
-        text = _render_msg(msg_key, {"url": url, "tournament_name": display_name}, lang)
-        try:
-            if qr_path.exists():
-                await ch.send(text, file=discord.File(qr_path, filename=qr_path.name))
-            else:
-                await ch.send(text)
-        except discord.Forbidden:
-            log.warning("Missing send permission on #%s — posting text only", channel_name)
-            try:
-                await ch.send(text)
-            except discord.Forbidden:
-                log.error("No send permission at all on #%s — skipping", channel_name)
-                continue
-        posted.append(f"#{channel_name}")
+    posted = await post_invite_qrs(ctx.deps.guild, data_dir, display_name, lang)
 
     if posted:
         return f"Posted invite links to: {', '.join(posted)}"

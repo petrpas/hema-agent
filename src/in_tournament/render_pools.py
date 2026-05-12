@@ -2,11 +2,11 @@
 
 Reads pool assignments from the per-discipline Google Sheet (one worksheet
 per pool, each with a 'Name' column), fills the pool_table_N.typ Typst
-template, and compiles it to a PDF.
+template, compiles each pool to a PDF, and concatenates them into one file.
 
 Entry point:
-    render_pools_for_disc(disc_code, user_config_path) -> list[tuple[str, bytes]]
-    Returns (filename, pdf_bytes) pairs, one per pool, sorted by pool number.
+    render_pools_for_disc(disc_code, user_config_path) -> tuple[str, bytes]
+    Returns (filename, pdf_bytes) for the merged PDF of all pools.
 """
 
 import json
@@ -35,6 +35,17 @@ def _abbrev(name: str) -> str:
     """Return initials for the score-grid column header (e.g. 'John Smith' → 'J.S.')."""
     parts = name.strip().split()
     return "".join(p[0].upper() for p in parts if p) if parts else name
+
+
+def _merge_pdfs(pdf_list: list[bytes]) -> bytes:
+    import io
+    from pypdf import PdfWriter
+    writer = PdfWriter()
+    for pdf_bytes in pdf_list:
+        writer.append(io.BytesIO(pdf_bytes))
+    buf = io.BytesIO()
+    writer.write(buf)
+    return buf.getvalue()
 
 
 
@@ -79,6 +90,30 @@ def _read_pools_from_sheet(sheet_url: str, creds_path: str) -> list[tuple[int, l
 
 # ── Typst rendering ────────────────────────────────────────────────────────────
 
+def _col_count(num_pools: int) -> int:
+    if num_pools <= 1:
+        return 1
+    if num_pools >= 10 or num_pools % 2 != 0:
+        return 3
+    return 2
+
+
+def _escape_str(s: str) -> str:
+    """Escape a string for embedding inside a Typst string literal."""
+    return s.replace("\\", "\\\\").replace('"', '\\"').replace("#", "\\#")
+
+
+def _build_list_block(pools: list[tuple[int, list[str]]]) -> str:
+    """Build the #let col_count / #let pools data block for pools_seed.typ."""
+    cols = _col_count(len(pools))
+    lines = [f"#let col_count = {cols}", "#let pools = ("]
+    for pool_no, names in pools:
+        escaped = ", ".join(f'"{_escape_str(n)}"' for n in names)
+        lines.append(f"  ({pool_no}, ({escaped},)),")
+    lines.append(")")
+    return "\n".join(lines)
+
+
 def _render_one_pdf(
     pool_no: int,
     names: list[str],
@@ -112,17 +147,103 @@ def _render_one_pdf(
         tmp.unlink(missing_ok=True)
 
 
-# ── Public entry point ─────────────────────────────────────────────────────────
+# ── Public entry points ────────────────────────────────────────────────────────
+
+def read_pools_for_disc(
+    disc_code: str,
+    user_config_path: Path,
+) -> list[tuple[int, list[str]]]:
+    """Return pool assignments for one discipline as [(pool_no, [fencer_names])].
+
+    Raises ValueError if the sheet URL is not configured or no pools are found.
+    """
+    from shared.config import load_agent_config
+
+    user_cfg: dict = {}
+    if user_config_path.exists():
+        with open(user_config_path) as f:
+            user_cfg = json.load(f)
+
+    sheet_url: str | None = user_cfg.get("data_sheet_urls", {}).get(disc_code)
+    if not sheet_url:
+        raise ValueError(
+            f"No data sheet URL configured for {disc_code} — "
+            "run `create_data_sheets` in #setup first"
+        )
+
+    creds_path = load_agent_config().reg_agent.creds_path
+    pools = _read_pools_from_sheet(sheet_url, creds_path)
+    if not pools:
+        raise ValueError(
+            f"No pools found for {disc_code} in the Pool standings worksheet"
+        )
+    return pools
+
+
+def render_pools_list_for_disc(
+    disc_code: str,
+    user_config_path: Path,
+) -> tuple[str, bytes]:
+    """Render a seeded pool list PDF using the pools_seed.typ template.
+
+    Returns (filename, pdf_bytes) where filename is '<disc>_pools_list.pdf'.
+    """
+    import typst
+
+    user_cfg: dict = {}
+    if user_config_path.exists():
+        with open(user_config_path) as f:
+            user_cfg = json.load(f)
+
+    sheet_url: str | None = user_cfg.get("data_sheet_urls", {}).get(disc_code)
+    if not sheet_url:
+        raise ValueError(
+            f"No data sheet URL configured for {disc_code} — "
+            "run `create_data_sheets` in #setup first"
+        )
+
+    tournament: str = (
+        user_cfg.get("tournament_display_name")
+        or user_cfg.get("tournament_name", "Tournament")
+    )
+    discipline: str = user_cfg.get("disciplines", {}).get(disc_code, disc_code)
+
+    from shared.config import load_agent_config
+    creds_path = load_agent_config().reg_agent.creds_path
+    pools = _read_pools_from_sheet(sheet_url, creds_path)
+    if not pools:
+        raise ValueError(f"No pools found for {disc_code} in the Pool standings worksheet")
+
+    template = (_TEMPLATES_DIR / "pools_seed.typ").read_text(encoding="utf-8")
+    source = (
+        template
+        .replace("{{data}}", _build_list_block(pools))
+        .replace("{{tournament_name}}", _escape_typst(tournament))
+        .replace("{{discipline_name}}", _escape_typst(discipline))
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".typ", mode="w", encoding="utf-8", delete=False) as f:
+        f.write(source)
+        tmp = Path(f.name)
+    try:
+        pdf_bytes = typst.compile(str(tmp), format="pdf", font_paths=[str(_FONTS_DIR)])
+    finally:
+        tmp.unlink(missing_ok=True)
+
+    filename = f"{disc_code}_pools_list.pdf"
+    log.info("Rendered pool list PDF for %s: %s", disc_code, filename)
+    return filename, pdf_bytes
+
 
 def render_pools_for_disc(
     disc_code: str,
     user_config_path: Path,
-) -> list[tuple[str, bytes]]:
-    """Render pool table PDFs for one discipline.
+) -> tuple[str, bytes]:
+    """Render pool table PDFs for one discipline and merge them into one file.
 
     Reads pool assignments from the configured Google Sheet, renders one PDF
-    per pool using the matching pool_table_N.typ template, and returns a list
-    of (filename, pdf_bytes) pairs ordered by pool number.
+    per pool using the matching pool_table_N.typ template, concatenates them,
+    and returns (filename, pdf_bytes) for the merged PDF.
 
     Raises ValueError if the sheet URL is not configured, no pools are found,
     or no pools could be rendered (e.g. unsupported sizes).
@@ -157,19 +278,22 @@ def render_pools_for_disc(
             "each pool must be a separate worksheet with a 'Name' column"
         )
 
-    results: list[tuple[str, bytes]] = []
+    rendered: list[bytes] = []
     for pool_no, names in pools:
         try:
             pdf = _render_one_pdf(pool_no, names, tournament, discipline)
-            filename = f"{disc_code}_pool_{pool_no}.pdf"
-            results.append((filename, pdf))
-            log.info("Rendered %s (%d fencers)", filename, len(names))
+            rendered.append(pdf)
+            log.info("Rendered %s pool %d (%d fencers)", disc_code, pool_no, len(names))
         except ValueError as e:
             log.warning("Skipping pool %d of %s: %s", pool_no, disc_code, e)
 
-    if not results:
+    if not rendered:
         raise ValueError(
             f"No pools could be rendered for {disc_code} — "
             "check that each pool has 4–8 fencers"
         )
-    return results
+
+    merged = _merge_pdfs(rendered)
+    filename = f"{disc_code}_pools.pdf"
+    log.info("Merged %d pool(s) into %s", len(rendered), filename)
+    return filename, merged
