@@ -251,6 +251,37 @@ def _do_save_disciplines(user_config_path: Path, disciplines: dict[str, str]) ->
         return f"error: {e}"
 
 
+def _do_configure_tournament(
+    user_config_path: Path,
+    name: str,
+    language: str,
+    disciplines: dict[str, str],
+) -> str:
+    """Atomically write all tournament config fields and create the data directory."""
+    agent_config = load_agent_config()
+    data_root = agent_config.reg_agent.data_root_dir
+    slug = _slugify(name)
+    data_dir = Path(data_root) / slug
+    data_dir.mkdir(parents=True, exist_ok=True)
+
+    config: dict = {
+        "tournament_name": slug,
+        "tournament_display_name": name,
+        "language": language.upper(),
+        "disciplines": disciplines,
+    }
+    user_config_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(user_config_path, "w") as f:
+        json.dump(config, f, indent=2)
+
+    _append_memory(
+        SHARED_MEMORY_PATH,
+        f"Tournament: {name} | Language: {language.upper()} | Disciplines: {', '.join(disciplines.keys())}",
+    )
+    log.info("Tournament configured: %s (%s), disciplines: %s", name, slug, list(disciplines.keys()))
+    return slug
+
+
 @setup_agent.tool
 def save_disciplines(ctx: RunContext[SetupDeps], disciplines: dict[str, str]) -> str:
     """Save tournament disciplines to user config.
@@ -261,12 +292,9 @@ def save_disciplines(ctx: RunContext[SetupDeps], disciplines: dict[str, str]) ->
     return _do_save_disciplines(ctx.deps.user_config_path, disciplines)
 
 
-@setup_agent.tool
-def create_data_sheets(ctx: RunContext[SetupDeps]) -> str:
-    """Copy the template data sheet once per discipline and save URLs to user config.
+def _do_create_data_sheets(user_config_path: Path) -> str:
+    """Copy the Drive template once per discipline and save URLs to user config.
 
-    Reads disciplines from user config, copies the Drive template for each one,
-    shares each copy with anyone (writer), and persists the URLs to data_sheet_urls.
     Returns a formatted list of discipline → URL pairs to post in Discord.
     """
     import re as _re
@@ -277,22 +305,20 @@ def create_data_sheets(ctx: RunContext[SetupDeps]) -> str:
     except ImportError as e:
         return f"error: missing dependency — {e}"
 
-    # Load user config
     user_cfg: dict = {}
-    if ctx.deps.user_config_path.exists():
+    if user_config_path.exists():
         try:
-            with open(ctx.deps.user_config_path) as f:
+            with open(user_config_path) as f:
                 user_cfg = json.load(f)
         except (json.JSONDecodeError, ValueError):
             pass
 
     disciplines: dict[str, str] = user_cfg.get("disciplines", {})
     if not disciplines:
-        return "error: no disciplines saved yet — run save_disciplines first"
+        return "error: no disciplines saved yet — run /set_disciplines first"
 
     display_name: str = user_cfg.get("tournament_display_name") or user_cfg.get("tournament_name", "Tournament")
 
-    # Load system config
     agent_config = load_agent_config()
     template_url = agent_config.run_agent.data_sheet_template_url
     if not template_url:
@@ -333,8 +359,19 @@ def create_data_sheets(ctx: RunContext[SetupDeps]) -> str:
         lines.append(f"**{code}** ({disc_name}): {url}")
         log.info("Created data sheet for %s: %s", code, url)
 
-    _update_user_config(ctx.deps.user_config_path, {"data_sheet_urls": urls})
+    _update_user_config(user_config_path, {"data_sheet_urls": urls})
     return "Data sheets created:\n" + "\n".join(lines)
+
+
+@setup_agent.tool
+def create_data_sheets(ctx: RunContext[SetupDeps]) -> str:
+    """Copy the template data sheet once per discipline and save URLs to user config.
+
+    Reads disciplines from user config, copies the Drive template for each one,
+    shares each copy with anyone (writer), and persists the URLs to data_sheet_urls.
+    Returns a formatted list of discipline → URL pairs to post in Discord.
+    """
+    return _do_create_data_sheets(ctx.deps.user_config_path)
 
 
 @setup_agent.tool

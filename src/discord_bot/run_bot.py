@@ -35,21 +35,18 @@ from shared.config import load_agent_config
 from in_tournament.config import load_in_config, InConfig
 
 from discord_bot.discord_utils import send_long
+from in_tournament.msgs import read_msg as _read_in_msg
 from in_tournament.render_pools import render_pools_for_disc
 from in_tournament.run_setup_agent.run_setup_agent import (
     DISCIPLINE_NAMES,
-    SHARED_MEMORY_PATH,
     _DEFAULT_USER_CONFIG,
-    _append_memory,
-    _do_init_data_dir,
-    _do_save_disciplines,
-    _do_save_language,
+    _do_configure_tournament,
+    _do_create_data_sheets,
     _do_validate_disciplines,
     RUN_SETUP_WELCOME,
     run_run_setup_agent,
 )
-from in_tournament.server_layout import ROLES, SETUP_CHANNEL
-from table2ascii import Alignment, PresetStyle, table2ascii
+from in_tournament.server_layout import ANNOUNCEMENTS_CHANNEL, ROLES, SETUP_CHANNEL
 from in_tournament.setup import (
     InviteSnapshot,
     assign_role_for_invite,
@@ -60,6 +57,8 @@ from in_tournament.setup import (
 )
 
 log = logging.getLogger(__name__)
+
+_HELP_TEXT = _read_in_msg("run_bot/help")
 
 
 class HemaTournamentRunBot(commands.Bot):
@@ -118,30 +117,7 @@ class GeneralCog(commands.Cog):
 
     @app_commands.command(name="help", description="List all available bot commands")
     async def help(self, interaction: discord.Interaction) -> None:
-        msg = (
-            "**HEMA Tournament Bot — commands**\n"
-            "\n"
-            "**Server**\n"
-            "`/setup` — Provision roles, channels, permissions and invite links *(manage_guild)*\n"
-            "\n"
-            "**Setup wizard shortcuts** *(manage_guild — use in #setup)*\n"
-            "`/set_language <code>` — Set organiser language (EN, CS, DE, …)\n"
-            "`/set_name <name>` — Set tournament display name\n"
-            "`/set_disciplines <codes>` — Set disciplines as comma-separated codes, e.g. `LS,SAW,SB`\n"
-            "\n"
-            "**Validation & rendering** *(manage_guild)*\n"
-            "`/validate_disc [disciplines]` — Check pool sheets against the tournament roster. "
-            "Omit `disciplines` to validate all configured disciplines.\n"
-            "`/render_pools <disc>` — Render pool table PDFs for a discipline and post them "
-            "to the **pool_tables** thread in #setup.\n"
-            "\n"
-            "**Moderation**\n"
-            "`/clear` — Delete all messages in this channel except the first *(manage_messages)*\n"
-            "\n"
-            "You can also type freely in **#setup** to configure the tournament step by step "
-            "with the AI assistant."
-        )
-        await interaction.response.send_message(msg, ephemeral=True)
+        await interaction.response.send_message(_HELP_TEXT, ephemeral=True)
 
     @app_commands.command(
         name="clear",
@@ -338,19 +314,108 @@ class SetupAgentCog(commands.Cog):
             self._running.discard(message.channel.id)
 
 
-_LANG_CHOICES = [
-    app_commands.Choice(name=code, value=code)
-    for code in ["EN", "CS", "DE", "FR", "ES", "IT", "PL", "SK", "HU", "RU"]
-]
+_SUPPORTED_LANGS = ["EN", "CS", "DE", "FR", "ES", "IT", "PL", "SK", "HU", "RU"]
+
+
+async def _wipe_guild_channels(guild: discord.Guild) -> None:
+    """Delete all threads and purge all messages in every text channel."""
+    for channel in guild.text_channels:
+        for thread in list(channel.threads):
+            try:
+                await thread.delete()
+            except discord.HTTPException:
+                pass
+        try:
+            async for thread in channel.archived_threads(limit=None):
+                try:
+                    await thread.delete()
+                except discord.HTTPException:
+                    pass
+        except discord.HTTPException:
+            pass
+        try:
+            await channel.purge(limit=None)
+        except discord.HTTPException:
+            pass
+
+
+class _TournamentConfigModal(discord.ui.Modal, title="Tournament Configuration"):
+    tournament_name = discord.ui.TextInput(
+        label="Tournament name",
+        placeholder="e.g. Prague Open 2026",
+        required=True,
+    )
+    language = discord.ui.TextInput(
+        label="Language (EN, CS, DE, …)",
+        placeholder="EN",
+        default="EN",
+        min_length=2,
+        max_length=5,
+        required=True,
+    )
+    disciplines = discord.ui.TextInput(
+        label="Disciplines (comma-separated codes)",
+        placeholder="e.g. LS, SAW, SB",
+        required=True,
+    )
+
+    def __init__(self, cog: "SetupCommandsCog") -> None:
+        super().__init__()
+        self._cog = cog
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:
+        name = self.tournament_name.value.strip()
+        lang = self.language.value.strip().upper()
+        disc_str = self.disciplines.value
+
+        if lang not in _SUPPORTED_LANGS:
+            await interaction.response.send_message(
+                f"Unsupported language **{lang}**. Supported: {', '.join(_SUPPORTED_LANGS)}",
+                ephemeral=True,
+            )
+            return
+
+        raw_codes = [c.strip().upper() for c in disc_str.split(",") if c.strip()]
+        if not raw_codes:
+            await interaction.response.send_message("No discipline codes provided.", ephemeral=True)
+            return
+        unknown = [c for c in raw_codes if c not in DISCIPLINE_NAMES]
+        if unknown:
+            await interaction.response.send_message(
+                f"Unknown code(s): **{', '.join(unknown)}**.\nValid codes: {', '.join(sorted(DISCIPLINE_NAMES))}",
+                ephemeral=True,
+            )
+            return
+
+        disciplines = {c: DISCIPLINE_NAMES[c] for c in raw_codes}
+
+        await interaction.response.defer(ephemeral=True)
+
+        if interaction.guild:
+            await _wipe_guild_channels(interaction.guild)
+
+        try:
+            await asyncio.to_thread(
+                _do_configure_tournament,
+                self._cog._user_config_path(),
+                name,
+                lang,
+                disciplines,
+            )
+        except Exception as e:
+            await interaction.followup.send(f"Configuration failed: {e}", ephemeral=True)
+            return
+
+        if interaction.guild:
+            disc_list = ", ".join(f"**{c}** ({n})" for c, n in disciplines.items())
+            await self._cog._post_setup(
+                interaction.guild,
+                f"Tournament configured:\n**Name:** {name}\n**Language:** {lang}\n**Disciplines:** {disc_list}",
+            )
+        await interaction.followup.send("Configuration saved — see #setup.", ephemeral=True)
 
 
 class SetupCommandsCog(commands.Cog):
-    """Slash-command shortcuts that bypass the LLM for well-known setup steps.
-
-    Each command directly calls the same `_do_*` helpers used by the agent
-    tools, then posts a confirmation to the #setup channel.
-    """
-
     def __init__(self, bot: HemaTournamentRunBot) -> None:
         self.bot = bot
 
@@ -364,92 +429,40 @@ class SetupCommandsCog(commands.Cog):
             await send_long(ch, text)
 
     @app_commands.command(
-        name="set_language",
-        description="Set the organiser language for this tournament",
+        name="configure",
+        description="Configure the tournament: name, language, and disciplines",
     )
-    @app_commands.describe(code="ISO 639-1 language code, e.g. EN, CS, DE")
-    @app_commands.choices(code=_LANG_CHOICES)
     @app_commands.default_permissions(manage_guild=True)
-    async def set_language(self, interaction: discord.Interaction, code: str) -> None:
+    async def configure(self, interaction: discord.Interaction) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
+            return
+        await interaction.response.send_modal(_TournamentConfigModal(self))
+
+    @app_commands.command(
+        name="create_pool_sheets",
+        description="Create one data entry sheet per discipline from the Drive template",
+    )
+    @app_commands.default_permissions(manage_guild=True)
+    async def create_pool_sheets(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:
             await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
             return
         await interaction.response.defer(ephemeral=True)
-        msg = _do_save_language(self._user_config_path(), SHARED_MEMORY_PATH, code)
-        await self._post_setup(interaction.guild, msg)
-        await interaction.followup.send(f"Language set to **{code.upper()}** — see #setup.", ephemeral=True)
+        result = await asyncio.to_thread(_do_create_data_sheets, self._user_config_path())
+        await self._post_setup(interaction.guild, result)
+        await interaction.followup.send("Done — see #setup for the sheet links.", ephemeral=True)
 
     @app_commands.command(
-        name="set_name",
-        description="Set the tournament display name",
-    )
-    @app_commands.describe(name="Full tournament name, e.g. Prague Open 2026")
-    @app_commands.default_permissions(manage_guild=True)
-    async def set_name(self, interaction: discord.Interaction, name: str) -> None:
-        if interaction.guild is None:
-            await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
-            return
-        if not name.strip():
-            await interaction.response.send_message("Tournament name cannot be empty.", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-        _append_memory(SHARED_MEMORY_PATH, f"Tournament name: {name}")
-        result = _do_init_data_dir(self._user_config_path(), name.strip())
-        await self._post_setup(interaction.guild, f"Tournament name set to **{name}**.\n_{result}_")
-        await interaction.followup.send(f"Tournament name saved — see #setup.", ephemeral=True)
-
-    @app_commands.command(
-        name="set_disciplines",
-        description="Set tournament disciplines using comma-separated codes, e.g. LS,SAW,SB",
-    )
-    @app_commands.describe(codes="Comma-separated discipline codes, e.g. LS,SAW,SB or LS, SAW, SB")
-    @app_commands.default_permissions(manage_guild=True)
-    async def set_disciplines(self, interaction: discord.Interaction, codes: str) -> None:
-        if interaction.guild is None:
-            await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
-            return
-        await interaction.response.defer(ephemeral=True)
-
-        raw_codes = [c.strip() for c in codes.split(",") if c.strip()]
-        if not raw_codes:
-            await interaction.followup.send("No codes provided.", ephemeral=True)
-            return
-
-        unknown = [c for c in raw_codes if c not in DISCIPLINE_NAMES]
-        if unknown:
-            valid = ", ".join(sorted(DISCIPLINE_NAMES))
-            await interaction.followup.send(
-                f"Unknown code(s): **{', '.join(unknown)}**.\nValid codes: {valid}",
-                ephemeral=True,
-            )
-            return
-
-        disciplines = {c: DISCIPLINE_NAMES[c] for c in raw_codes}
-        _do_save_disciplines(self._user_config_path(), disciplines)
-
-        rows = [[code, name] for code, name in disciplines.items()]
-        table = table2ascii(
-            header=["Code", "Discipline"],
-            body=rows,
-            style=PresetStyle.thin_compact,
-            alignments=[Alignment.LEFT, Alignment.LEFT],
-        )
-        await self._post_setup(
-            interaction.guild,
-            f"Disciplines saved:\n```\n{table}\n```",
-        )
-        await interaction.followup.send("Disciplines saved — see #setup.", ephemeral=True)
-
-    @app_commands.command(
-        name="validate_disc",
+        name="validate_pools",
         description="Check pool sheets against the tournament roster",
     )
     @app_commands.describe(
-        disciplines="Comma-separated discipline codes to check, e.g. LS,SAW. Leave empty to check all."
+        disc="Comma-separated discipline codes to check, e.g. LS,SAW. Leave empty to check all."
     )
     @app_commands.default_permissions(manage_guild=True)
-    async def validate_disc(
-        self, interaction: discord.Interaction, disciplines: str = ""
+    async def validate_pools(
+        self, interaction: discord.Interaction, disc: str = ""
     ) -> None:
         if interaction.guild is None:
             await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
@@ -458,9 +471,8 @@ class SetupCommandsCog(commands.Cog):
 
         user_config = self._user_config_path()
 
-        # Resolve which disciplines to validate
-        if disciplines.strip():
-            codes_to_check = [c.strip() for c in disciplines.split(",") if c.strip()]
+        if disc.strip():
+            codes_to_check = [c.strip() for c in disc.split(",") if c.strip()]
             unknown = [c for c in codes_to_check if c not in DISCIPLINE_NAMES]
             if unknown:
                 await interaction.followup.send(
@@ -505,11 +517,98 @@ class SetupCommandsCog(commands.Cog):
 
     @app_commands.command(
         name="render_pools",
-        description="Render pool table PDFs for a discipline and post to #setup → pool_tables thread",
+        description="Render pool table PDFs and post to #setup → <disc>_pool_tables thread",
+    )
+    @app_commands.describe(disc="Discipline code, e.g. LS, SAW. Leave empty to render all.")
+    @app_commands.default_permissions(manage_guild=True)
+    async def render_pools(self, interaction: discord.Interaction, disc: str = "") -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
+            return
+
+        user_config = self._user_config_path()
+
+        if disc.strip():
+            codes = [disc.strip()]
+            if codes[0] not in DISCIPLINE_NAMES:
+                await interaction.response.send_message(
+                    f"Unknown discipline code **{codes[0]}**. "
+                    f"Valid codes: {', '.join(sorted(DISCIPLINE_NAMES))}",
+                    ephemeral=True,
+                )
+                return
+        else:
+            try:
+                with open(user_config) as f:
+                    cfg = json.load(f)
+                codes = list(cfg.get("disciplines", {}).keys())
+            except Exception:
+                codes = []
+            if not codes:
+                await interaction.response.send_message(
+                    "No disciplines configured. "
+                    "Run `/set_disciplines` first or pass a code explicitly.",
+                    ephemeral=True,
+                )
+                return
+
+        await interaction.response.defer(ephemeral=True)
+
+        setup_ch = discord.utils.get(interaction.guild.text_channels, name=SETUP_CHANNEL)
+        if setup_ch is None:
+            await interaction.followup.send("❌ #setup channel not found.", ephemeral=True)
+            return
+
+        rendered: list[str] = []
+        for code in codes:
+            try:
+                pdfs: list[tuple[str, bytes]] = await asyncio.to_thread(
+                    render_pools_for_disc, code, user_config
+                )
+            except ValueError as e:
+                await interaction.followup.send(f"❌ {code}: {e}", ephemeral=True)
+                continue
+            except Exception as e:
+                log.exception("render_pools failed for %s", code)
+                await interaction.followup.send(f"❌ {code}: unexpected error: {e}", ephemeral=True)
+                continue
+
+            thread_name = f"{code}_pool_tables"
+            thread = discord.utils.get(setup_ch.threads, name=thread_name)
+            if thread is None:
+                async for t in setup_ch.archived_threads(limit=50):
+                    if t.name == thread_name:
+                        await t.unarchive()
+                        thread = t
+                        break
+            if thread is None:
+                thread = await setup_ch.create_thread(
+                    name=thread_name,
+                    type=discord.ChannelType.public_thread,
+                    auto_archive_duration=10080,  # 1 week
+                )
+
+            files = [
+                discord.File(io.BytesIO(pdf_bytes), filename=filename)
+                for filename, pdf_bytes in pdfs
+            ]
+            disc_name = DISCIPLINE_NAMES[code]
+            await thread.send(f"**{code}** — {disc_name} ({len(pdfs)} pool(s))", files=files)
+            rendered.append(f"**{code}** → {thread_name}")
+
+        if rendered:
+            await interaction.followup.send(
+                f"Rendered pools for: {', '.join(rendered)} — see #{SETUP_CHANNEL}.",
+                ephemeral=True,
+            )
+
+    @app_commands.command(
+        name="publish_pools",
+        description="Publish pool tables for fencers into #announcements → <disc>_pools thread",
     )
     @app_commands.describe(disc="Discipline code, e.g. LS, SAW")
     @app_commands.default_permissions(manage_guild=True)
-    async def render_pools(self, interaction: discord.Interaction, disc: str) -> None:
+    async def publish_pools(self, interaction: discord.Interaction, disc: str) -> None:
         if interaction.guild is None:
             await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
             return
@@ -534,45 +633,42 @@ class SetupCommandsCog(commands.Cog):
             await interaction.followup.send(f"❌ {e}", ephemeral=True)
             return
         except Exception as e:
-            log.exception("render_pools failed for %s", disc)
+            log.exception("publish_pools failed for %s", disc)
             await interaction.followup.send(f"❌ Unexpected error: {e}", ephemeral=True)
             return
 
-        # Find the #setup channel
-        setup_ch = discord.utils.get(interaction.guild.text_channels, name=SETUP_CHANNEL)
-        if setup_ch is None:
-            await interaction.followup.send("❌ #setup channel not found.", ephemeral=True)
+        ann_ch = discord.utils.get(interaction.guild.text_channels, name=ANNOUNCEMENTS_CHANNEL)
+        if ann_ch is None:
+            await interaction.followup.send(
+                f"❌ #{ANNOUNCEMENTS_CHANNEL} channel not found.", ephemeral=True
+            )
             return
 
-        # Find or create the pool_tables thread
-        thread = discord.utils.get(setup_ch.threads, name="pool_tables")
+        thread_name = f"{disc}_pools"
+        thread = discord.utils.get(ann_ch.threads, name=thread_name)
         if thread is None:
-            async for t in setup_ch.archived_threads(limit=50):
-                if t.name == "pool_tables":
+            async for t in ann_ch.archived_threads(limit=50):
+                if t.name == thread_name:
                     await t.unarchive()
                     thread = t
                     break
         if thread is None:
-            thread = await setup_ch.create_thread(
-                name="pool_tables",
+            thread = await ann_ch.create_thread(
+                name=thread_name,
                 type=discord.ChannelType.public_thread,
                 auto_archive_duration=10080,  # 1 week
             )
 
-        # Post all PDFs in one message
         files = [
             discord.File(io.BytesIO(pdf_bytes), filename=filename)
             for filename, pdf_bytes in pdfs
         ]
         disc_name = DISCIPLINE_NAMES[disc]
-        await thread.send(
-            f"**{disc}** — {disc_name} ({len(pdfs)} pool(s))",
-            files=files,
-        )
+        await thread.send(f"**{disc}** — {disc_name} ({len(pdfs)} pool(s))", files=files)
 
         await interaction.followup.send(
-            f"Rendered {len(pdfs)} pool table(s) for **{disc}** — see the "
-            f"**pool_tables** thread in #{SETUP_CHANNEL}.",
+            f"Published {len(pdfs)} pool table(s) for **{disc}** — "
+            f"see **{thread_name}** thread in #{ANNOUNCEMENTS_CHANNEL}.",
             ephemeral=True,
         )
 
