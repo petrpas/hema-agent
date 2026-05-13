@@ -27,6 +27,7 @@ import qrcode
 
 from in_tournament.server_layout import (
     LAYOUT,
+    ROLE_ADMIN,
     ROLES,
     CategorySpec,
     ChannelSpec,
@@ -253,7 +254,8 @@ async def _ensure_invites(
 
 
 _QR_FILL_COLORS: dict[str, str] = {
-    "organizer": "#8B0000",  # dark red — distinct from guest QR
+    "admin":     "#1A237E",  # dark blue — highest privilege
+    "organizer": "#8B0000",  # dark red — distinct from admin and guest QR
 }
 
 
@@ -333,6 +335,15 @@ async def setup_server(guild: discord.Guild, data_root: Path) -> SetupReport:
             await me.add_roles(bot_role, reason="run_bot setup: self-tag")
         except discord.Forbidden:
             log.warning("Cannot self-assign Bot role in %s (insufficient permissions)", guild.name)
+
+    admin_role = role_map.get(ROLE_ADMIN)
+    if admin_role is not None and guild.owner is not None:
+        if admin_role not in guild.owner.roles:
+            try:
+                await guild.owner.add_roles(admin_role, reason="run_bot setup: auto-assign Admin to server owner")
+                log.info("Assigned Admin role to owner %s in %s", guild.owner, guild.name)
+            except discord.Forbidden:
+                log.warning("Cannot assign Admin role to owner in %s", guild.name)
 
     invite_channel: discord.TextChannel | None = None
     for cat_spec in LAYOUT:

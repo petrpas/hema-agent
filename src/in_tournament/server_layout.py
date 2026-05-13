@@ -40,6 +40,7 @@ class CategorySpec:
 
 # ── Role names ────────────────────────────────────────────────────────────────
 
+ROLE_ADMIN     = "Admin"
 ROLE_ORGANIZER = "Organizer"
 ROLE_GUEST     = "Guest"
 ROLE_BOT       = "Bot"
@@ -64,33 +65,40 @@ BOT_COMMANDS_CHANNEL   = "bot-commands"
 # ── Layout ────────────────────────────────────────────────────────────────────
 
 ROLES: list[RoleSpec] = [
+    RoleSpec(ROLE_ADMIN,     auto_assign_via_invite=True),
     RoleSpec(ROLE_ORGANIZER, auto_assign_via_invite=True),
     RoleSpec(ROLE_GUEST,     auto_assign_via_invite=True),
     RoleSpec(ROLE_BOT),
 ]
 
 
-def _general(name: str, organizer: Perm, guest: Perm, bot: Perm) -> ChannelSpec:
-    return ChannelSpec(name, {ROLE_ORGANIZER: organizer, ROLE_GUEST: guest, ROLE_BOT: bot})
+def _general(name: str, admin: Perm, organizer: Perm, guest: Perm, bot: Perm) -> ChannelSpec:
+    return ChannelSpec(name, {
+        ROLE_ADMIN: admin,
+        ROLE_ORGANIZER: organizer,
+        ROLE_GUEST: guest,
+        ROLE_BOT: bot,
+    })
 
 
 LAYOUT: list[CategorySpec] = [
     CategorySpec("General", [
-        _general(WELCOME_CHANNEL,       Perm.RW, Perm.RO, Perm.RW),
-        _general(ANNOUNCEMENTS_CHANNEL, Perm.RW, Perm.RO, Perm.RW),
-        _general(SCHEDULE_CHANNEL,      Perm.RW, Perm.RO, Perm.RW),
-        _general(RESULTS_CHANNEL,       Perm.RO, Perm.RO, Perm.RW),
-        _general(RULES_CHANNEL,         Perm.RW, Perm.RO, Perm.RO),
+        _general(WELCOME_CHANNEL,       Perm.RW, Perm.RW, Perm.RO, Perm.RW),
+        _general(ANNOUNCEMENTS_CHANNEL, Perm.RW, Perm.RW, Perm.RO, Perm.RW),
+        _general(SCHEDULE_CHANNEL,      Perm.RW, Perm.RW, Perm.RO, Perm.RW),
+        _general(RESULTS_CHANNEL,       Perm.RO, Perm.RO, Perm.RO, Perm.RW),
+        _general(RULES_CHANNEL,         Perm.RW, Perm.RW, Perm.RO, Perm.RO),
     ]),
     CategorySpec("Community", [
-        _general(GENERAL_CHAT_CHANNEL,  Perm.RW, Perm.RW, Perm.RO),
-        _general(SPARRING_CHANNEL,      Perm.RW, Perm.RW, Perm.RO),
-        _general(QUESTIONS_CHANNEL,     Perm.RW, Perm.RW, Perm.RO),
+        _general(GENERAL_CHAT_CHANNEL,  Perm.RW, Perm.RW, Perm.RW, Perm.RO),
+        _general(SPARRING_CHANNEL,      Perm.RW, Perm.RW, Perm.RW, Perm.RO),
+        _general(QUESTIONS_CHANNEL,     Perm.RW, Perm.RW, Perm.RW, Perm.RO),
     ]),
     CategorySpec("Organization", [
-        _general(SETUP_CHANNEL,          Perm.RW, Perm.NONE, Perm.RW),
-        _general(ORG_INTERNAL_CHANNEL,   Perm.RW, Perm.NONE, Perm.RW),
-        _general(RESULTS_UPLOAD_CHANNEL, Perm.RW, Perm.NONE, Perm.RW),
-        _general(BOT_COMMANDS_CHANNEL,   Perm.RW, Perm.NONE, Perm.RW),
+        # #setup: Admin-only — Organizers can't configure the bot
+        _general(SETUP_CHANNEL,          Perm.RW, Perm.NONE, Perm.NONE, Perm.RW),
+        _general(ORG_INTERNAL_CHANNEL,   Perm.RW, Perm.RW,   Perm.NONE, Perm.RW),
+        _general(RESULTS_UPLOAD_CHANNEL, Perm.RW, Perm.RW,   Perm.NONE, Perm.RW),
+        _general(BOT_COMMANDS_CHANNEL,   Perm.RW, Perm.RW,   Perm.NONE, Perm.RW),
     ]),
 ]

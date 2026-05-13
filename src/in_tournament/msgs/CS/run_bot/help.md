@@ -1,16 +1,20 @@
 **HEMA Squire — Příkazy**
 
-**Server**
-`/setup` — vytvoří role, kanály, oprávnění a pozvánky
-`/configure` — nastaví název turnaje, jazyk a disciplíny (otevře formulář; smaže také historii kanálů)
+Všechny příkazy vyžadují roli **Admin**.
 
-**Skupiny** *(manage_guild)*
-`/create_pool_sheets` — vytvoří jeden Google Sheet pro každou disciplínu k vyplnění jmen šermířů
+**Nastavení serveru** *(jednorázové — po prvním spuštění zmizí)*
+`/setup` — vytvoří role, kanály, pozvánky a QR kódy; automaticky přiřadí Admin vlastníkovi serveru
+
+**Konfigurace** *(pouze v #setup)*
+`/configure` — nastaví název turnaje, jazyk a disciplíny (otevře formulář; po potvrzení smaže historii kanálů)
+`/create_pool_sheets` — vytvoří jeden Google Sheet pro každou disciplínu
 `/validate_pools [disc]` — zkontroluje skupiny oproti seznamu účastníků (výchozí: všechny disciplíny)
 `/render_pools [disc]` — vykreslí skupiny jako PDF do vlákna **<disc>_pool_tables** v #setup
+
+**Publikování** *(#setup nebo #bot-commands)*
 `/publish_pools <disc>` — zveřejní skupiny pro šermíře do vlákna **<disc>_pools** v #announcements
 
 **Moderování**
-`/clear` — smaže všechny zprávy v tomto kanálu kromě první *(manage_messages)*
+`/clear` — smaže všechny zprávy v tomto kanálu kromě první
 
-V kanálu **#setup** můžete také psát volně a pokračovat v nastavení s pomocí AI asistenta.
+Admini mohou také psát volně v **#setup** a pracovat s AI asistentem při nastavení.

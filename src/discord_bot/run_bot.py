@@ -47,8 +47,15 @@ from in_tournament.run_setup_agent.run_setup_agent import (
     RUN_SETUP_WELCOME,
     run_run_setup_agent,
 )
-from in_tournament.server_layout import ANNOUNCEMENTS_CHANNEL, ROLES, SETUP_CHANNEL
+from in_tournament.server_layout import (
+    ANNOUNCEMENTS_CHANNEL,
+    BOT_COMMANDS_CHANNEL,
+    ROLE_ADMIN,
+    ROLES,
+    SETUP_CHANNEL,
+)
 from in_tournament.setup import (
+    INVITES_FILE,
     InviteSnapshot,
     assign_role_for_invite,
     detect_used_code,
@@ -60,6 +67,35 @@ from in_tournament.setup import (
 log = logging.getLogger(__name__)
 
 _HELP_TEXT = _read_in_msg("run_bot/help")
+
+
+# ── Access-control helpers ────────────────────────────────────────────────────
+
+def _admin_only() -> app_commands.checks.Cooldown:
+    """Require the invoking user to hold the Admin role."""
+    return app_commands.checks.has_role(ROLE_ADMIN)
+
+
+def _in_setup() -> app_commands.check:
+    """Require the command to be run in #setup."""
+    async def predicate(interaction: discord.Interaction) -> bool:
+        ch = interaction.channel
+        if isinstance(ch, discord.TextChannel) and ch.name == SETUP_CHANNEL:
+            return True
+        raise app_commands.CheckFailure(f"Use this command in #{SETUP_CHANNEL}.")
+    return app_commands.check(predicate)
+
+
+def _in_setup_or_botcmds() -> app_commands.check:
+    """Require the command to be run in #setup or #bot-commands."""
+    async def predicate(interaction: discord.Interaction) -> bool:
+        ch = interaction.channel
+        if isinstance(ch, discord.TextChannel) and ch.name in (SETUP_CHANNEL, BOT_COMMANDS_CHANNEL):
+            return True
+        raise app_commands.CheckFailure(
+            f"Use this command in #{SETUP_CHANNEL} or #{BOT_COMMANDS_CHANNEL}."
+        )
+    return app_commands.check(predicate)
 
 
 class HemaTournamentRunBot(commands.Bot):
@@ -91,6 +127,15 @@ class HemaTournamentRunBot(commands.Bot):
         await self.add_cog(SetupCommandsCog(self))
         # ResultsCog will be added in the next slice.
 
+    def _data_root(self) -> Path:
+        if self.config is not None:
+            return Path(self.config.data_root_dir)
+        return Path(load_agent_config().reg_agent.data_root_dir)
+
+    def _setup_done(self, guild_id: int) -> bool:
+        """Return True if /setup has already been run for this guild."""
+        return (run_bot_data_dir(self._data_root(), guild_id) / INVITES_FILE).exists()
+
     async def on_ready(self) -> None:
         assert self.user is not None
         log.info("Logged in as %s (ID: %d)", self.user, self.user.id)
@@ -101,13 +146,44 @@ class HemaTournamentRunBot(commands.Bot):
         )
         for guild in self.guilds:
             self.tree.copy_global_to(guild=guild)
+            if self._setup_done(guild.id):
+                self.tree.remove_command("setup", guild=guild)
             await self.tree.sync(guild=guild)
             log.info("Slash command tree synced to guild %s (%d)", guild.name, guild.id)
+            await self._ensure_owner_is_admin(guild)
+
+    async def _ensure_owner_is_admin(self, guild: discord.Guild) -> None:
+        admin_role = discord.utils.get(guild.roles, name=ROLE_ADMIN)
+        if admin_role is None or guild.owner is None:
+            return
+        if admin_role not in guild.owner.roles:
+            try:
+                await guild.owner.add_roles(admin_role, reason="run_bot: auto-assign Admin to server owner")
+                log.info("Assigned Admin role to owner %s in %s", guild.owner, guild.name)
+            except discord.Forbidden:
+                log.warning("Cannot assign Admin role to owner in %s", guild.name)
 
     async def on_guild_join(self, guild: discord.Guild) -> None:
         self.tree.copy_global_to(guild=guild)
         await self.tree.sync(guild=guild)
         log.info("Slash command tree synced to new guild %s (%d)", guild.name, guild.id)
+
+    async def on_app_command_error(
+        self,
+        interaction: discord.Interaction,
+        error: app_commands.AppCommandError,
+    ) -> None:
+        if isinstance(error, app_commands.MissingRole):
+            msg = f"This command requires the **{ROLE_ADMIN}** role."
+        elif isinstance(error, app_commands.CheckFailure):
+            msg = str(error)
+        else:
+            log.exception("Unhandled app command error in %s: %s", interaction.command, error)
+            msg = f"Unexpected error: {error}"
+        try:
+            await interaction.response.send_message(msg, ephemeral=True)
+        except discord.InteractionResponded:
+            await interaction.followup.send(msg, ephemeral=True)
 
 
 class GeneralCog(commands.Cog):
@@ -124,7 +200,7 @@ class GeneralCog(commands.Cog):
         name="clear",
         description="Remove all messages except the welcome message",
     )
-    @app_commands.default_permissions(manage_messages=True)
+    @_admin_only()
     async def clear(self, interaction: discord.Interaction) -> None:
         channel = interaction.channel
         if not isinstance(channel, discord.TextChannel):
@@ -152,12 +228,12 @@ class GeneralCog(commands.Cog):
         log.info("Cleared %d messages in #%s (%s)", count, channel.name, interaction.guild)
 
     @commands.command(name="sync")
-    @commands.is_owner()
+    @commands.has_permissions(manage_guild=True)
     async def sync(self, ctx: commands.Context) -> None:
-        """Sync slash commands to this guild instantly (owner only, use !sync)."""
+        """Sync slash commands to this guild instantly (manage_guild only, use !sync)."""
         await self.bot.tree.sync(guild=ctx.guild)
         await ctx.send("Slash commands synced to this server.", delete_after=5)
-        log.info("Tree synced to guild %s by owner", ctx.guild)
+        log.info("Tree synced to guild %s by %s", ctx.guild, ctx.author)
 
 
 class ServerSetupCog(commands.Cog):
@@ -251,6 +327,10 @@ class ServerSetupCog(commands.Cog):
 
         await self._refresh_invites(guild)
 
+        # Remove /setup from this guild's command tree — it's a one-time operation.
+        self.bot.tree.remove_command("setup", guild=guild)
+        await self.bot.tree.sync(guild=guild)
+
         # Seed the #setup channel with the welcome message on first creation,
         # so the organiser sees something there when they walk in.
         if SETUP_CHANNEL in report.channels_created:
@@ -259,6 +339,34 @@ class ServerSetupCog(commands.Cog):
                 await send_long(setup_ch, RUN_SETUP_WELCOME)
 
         await interaction.followup.send(report.summary(), ephemeral=True)
+
+
+async def _get_or_create_thread(
+    channel: discord.TextChannel,
+    name: str,
+    auto_archive_duration: int = 10080,
+) -> discord.Thread:
+    """Return an active thread by name, unarchiving if necessary, or create a new one.
+
+    Falls back to creating a new thread if the archived one cannot be unarchived
+    (e.g. locked by another user or the bot lacks Manage Threads).
+    """
+    thread = discord.utils.get(channel.threads, name=name)
+    if thread is not None:
+        return thread
+    async for t in channel.archived_threads(limit=100):
+        if t.name == name:
+            try:
+                await t.edit(archived=False, locked=False)
+                return t
+            except discord.Forbidden:
+                log.warning("Cannot unarchive thread '%s' in #%s — will create a new one", name, channel.name)
+                break
+    return await channel.create_thread(
+        name=name,
+        type=discord.ChannelType.public_thread,
+        auto_archive_duration=auto_archive_duration,
+    )
 
 
 async def _typing_loop(channel: discord.TextChannel) -> None:
@@ -293,8 +401,15 @@ class SetupAgentCog(commands.Cog):
             return
         if message.channel.name != SETUP_CHANNEL:
             return
-        if message.content.startswith("/"):
+        if message.content.startswith(("/", "!")):
             return
+        if isinstance(message.author, discord.Member):
+            if not any(r.name == ROLE_ADMIN for r in message.author.roles):
+                await message.reply(
+                    f"Only members with the **{ROLE_ADMIN}** role can configure the bot.",
+                    mention_author=False,
+                )
+                return
         if message.channel.id in self._running:
             await message.channel.send("⏳ Already processing — please wait.")
             return
@@ -387,6 +502,64 @@ async def _wipe_guild_channels(guild: discord.Guild) -> None:
     log.info("wipe_guild_channels: done")
 
 
+class _ConfirmConfigView(discord.ui.View):
+    """Ephemeral confirmation step for /configure — shown after the modal."""
+
+    def __init__(
+        self,
+        cog: "SetupCommandsCog",
+        name: str,
+        lang: str,
+        disciplines: dict[str, str],
+    ) -> None:
+        super().__init__(timeout=120)
+        self._cog = cog
+        self._name = name
+        self._lang = lang
+        self._disciplines = disciplines
+
+    def _disable_all(self) -> None:
+        for item in self.children:
+            item.disabled = True  # type: ignore[union-attr]
+
+    @discord.ui.button(label="Confirm", style=discord.ButtonStyle.danger)
+    async def confirm(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        self._disable_all()
+        await interaction.response.edit_message(content="⏳ Applying configuration…", view=self)
+        self.stop()
+
+        if interaction.guild:
+            await _wipe_guild_channels(interaction.guild)
+
+        try:
+            await asyncio.to_thread(
+                _do_configure_tournament,
+                self._cog._user_config_path(),
+                self._name,
+                self._lang,
+                self._disciplines,
+            )
+        except Exception as e:
+            await interaction.edit_original_response(content=f"Configuration failed: {e}", view=None)
+            return
+
+        if interaction.guild:
+            disc_list = ", ".join(f"**{c}** ({n})" for c, n in self._disciplines.items())
+            await self._cog._post_setup(
+                interaction.guild,
+                f"Tournament configured:\n**Name:** {self._name}\n**Language:** {self._lang}\n**Disciplines:** {disc_list}",
+            )
+            data_dir = run_bot_data_dir(self._cog._data_root(), interaction.guild.id)
+            await post_invite_qrs(interaction.guild, data_dir, self._name, self._lang)
+
+        await interaction.edit_original_response(content="Configuration saved — see #setup.", view=None)
+
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
+    async def cancel(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
+        await interaction.response.edit_message(content="Cancelled — no changes made.", view=None)
+        self.stop()
+
+
 class _TournamentConfigModal(discord.ui.Modal, title="Tournament Configuration"):
     tournament_name = discord.ui.TextInput(
         label="Tournament name",
@@ -444,33 +617,16 @@ class _TournamentConfigModal(discord.ui.Modal, title="Tournament Configuration")
             return
 
         disciplines = {c: DISCIPLINE_NAMES[c] for c in raw_codes}
-
-        await interaction.response.defer(ephemeral=True)
-
-        if interaction.guild:
-            await _wipe_guild_channels(interaction.guild)
-
-        try:
-            await asyncio.to_thread(
-                _do_configure_tournament,
-                self._cog._user_config_path(),
-                name,
-                lang,
-                disciplines,
-            )
-        except Exception as e:
-            await interaction.followup.send(f"Configuration failed: {e}", ephemeral=True)
-            return
-
-        if interaction.guild:
-            disc_list = ", ".join(f"**{c}** ({n})" for c, n in disciplines.items())
-            await self._cog._post_setup(
-                interaction.guild,
-                f"Tournament configured:\n**Name:** {name}\n**Language:** {lang}\n**Disciplines:** {disc_list}",
-            )
-            data_dir = run_bot_data_dir(self._cog._data_root(), interaction.guild.id)
-            await post_invite_qrs(interaction.guild, data_dir, name, lang)
-        await interaction.followup.send("Configuration saved — see #setup.", ephemeral=True)
+        disc_list = ", ".join(f"**{c}** ({n})" for c, n in disciplines.items())
+        summary = (
+            "This will **wipe all channel messages** and apply:\n\n"
+            f"**Tournament name:** {name}\n"
+            f"**Language:** {lang}\n"
+            f"**Disciplines:** {disc_list}\n\n"
+            "Are you sure?"
+        )
+        view = _ConfirmConfigView(self._cog, name, lang, disciplines)
+        await interaction.response.send_message(summary, view=view, ephemeral=True)
 
 
 class SetupCommandsCog(commands.Cog):
@@ -495,7 +651,8 @@ class SetupCommandsCog(commands.Cog):
         name="configure",
         description="Configure the tournament: name, language, and disciplines",
     )
-    @app_commands.default_permissions(manage_guild=True)
+    @_admin_only()
+    @_in_setup()
     async def configure(self, interaction: discord.Interaction) -> None:
         log.info("/configure invoked by %s in guild %s", interaction.user, interaction.guild)
         if interaction.guild is None:
@@ -507,7 +664,8 @@ class SetupCommandsCog(commands.Cog):
         name="create_pool_sheets",
         description="Create one data entry sheet per discipline from the Drive template",
     )
-    @app_commands.default_permissions(manage_guild=True)
+    @_admin_only()
+    @_in_setup()
     async def create_pool_sheets(self, interaction: discord.Interaction) -> None:
         if interaction.guild is None:
             await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
@@ -524,7 +682,8 @@ class SetupCommandsCog(commands.Cog):
     @app_commands.describe(
         disc="Comma-separated discipline codes to check, e.g. LS,SAW. Leave empty to check all."
     )
-    @app_commands.default_permissions(manage_guild=True)
+    @_admin_only()
+    @_in_setup()
     async def validate_pools(
         self, interaction: discord.Interaction, disc: str = ""
     ) -> None:
@@ -577,20 +736,7 @@ class SetupCommandsCog(commands.Cog):
             )
 
             thread_name = f"{code}_pools_validation"
-            thread = discord.utils.get(setup_ch.threads, name=thread_name)
-            if thread is None:
-                async for t in setup_ch.archived_threads(limit=50):
-                    if t.name == thread_name:
-                        await t.unarchive()
-                        thread = t
-                        break
-            if thread is None:
-                thread = await setup_ch.create_thread(
-                    name=thread_name,
-                    type=discord.ChannelType.public_thread,
-                    auto_archive_duration=10080,
-                )
-
+            thread = await _get_or_create_thread(setup_ch, thread_name)
             await send_long(thread, report)
             posted.append(f"**{code}** → {thread_name}")
 
@@ -604,7 +750,8 @@ class SetupCommandsCog(commands.Cog):
         description="Render pool table PDFs and post to #setup → <disc>_pool_tables thread",
     )
     @app_commands.describe(disc="Discipline code, e.g. LS, SAW. Leave empty to render all.")
-    @app_commands.default_permissions(manage_guild=True)
+    @_admin_only()
+    @_in_setup()
     async def render_pools(self, interaction: discord.Interaction, disc: str = "") -> None:
         if interaction.guild is None:
             await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
@@ -661,19 +808,7 @@ class SetupCommandsCog(commands.Cog):
                 continue
 
             thread_name = f"{code}_pool_tables"
-            thread = discord.utils.get(setup_ch.threads, name=thread_name)
-            if thread is None:
-                async for t in setup_ch.archived_threads(limit=50):
-                    if t.name == thread_name:
-                        await t.unarchive()
-                        thread = t
-                        break
-            if thread is None:
-                thread = await setup_ch.create_thread(
-                    name=thread_name,
-                    type=discord.ChannelType.public_thread,
-                    auto_archive_duration=10080,  # 1 week
-                )
+            thread = await _get_or_create_thread(setup_ch, thread_name)
 
             disc_name = DISCIPLINE_NAMES[code]
             await thread.send(
@@ -696,7 +831,8 @@ class SetupCommandsCog(commands.Cog):
         description="Publish pool tables for fencers into #announcements → <disc>_pools thread",
     )
     @app_commands.describe(disc="Discipline code, e.g. LS, SAW")
-    @app_commands.default_permissions(manage_guild=True)
+    @_admin_only()
+    @_in_setup_or_botcmds()
     async def publish_pools(self, interaction: discord.Interaction, disc: str) -> None:
         if interaction.guild is None:
             await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
@@ -732,19 +868,7 @@ class SetupCommandsCog(commands.Cog):
             return
 
         thread_name = f"{disc}_pools"
-        thread = discord.utils.get(ann_ch.threads, name=thread_name)
-        if thread is None:
-            async for t in ann_ch.archived_threads(limit=50):
-                if t.name == thread_name:
-                    await t.unarchive()
-                    thread = t
-                    break
-        if thread is None:
-            thread = await ann_ch.create_thread(
-                name=thread_name,
-                type=discord.ChannelType.public_thread,
-                auto_archive_duration=10080,  # 1 week
-            )
+        thread = await _get_or_create_thread(ann_ch, thread_name)
 
         colour = _disc_colour(disc)
         disc_name = DISCIPLINE_NAMES[disc]
