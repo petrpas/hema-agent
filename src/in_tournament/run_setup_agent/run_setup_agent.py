@@ -485,6 +485,50 @@ def _disc_code_from_dict(d: dict) -> str:
     return (mat + " " if mat else "") + weapon + gen
 
 
+def _write_pool_ref_table(
+    ws,
+    sorted_pool_cols: list[tuple[int, str]],
+    fencer_rows: list[list],
+    name_to_value: dict[str, str],
+    label: str,
+    start_row: int,
+) -> int:
+    """Write a reference table (Clubs/Seeds/Nats) at A{start_row} and return the next row.
+
+    fencer_rows: the fencer-data rows only (header row already excluded).
+    """
+    pool_names = [h for _, h in sorted_pool_cols]
+    pool_values: dict[str, list] = {}
+    for col_idx, pool_name in sorted_pool_cols:
+        vals: list = []
+        for row in fencer_rows:
+            if col_idx < len(row):
+                fname = row[col_idx].strip()
+                if fname:
+                    vals.append(name_to_value.get(fname.lower(), ""))
+        pool_values[pool_name] = vals
+
+    max_rows = max((len(v) for v in pool_values.values()), default=0)
+    table: list[list] = [[label] + pool_names]
+    for i in range(max_rows):
+        table.append([i + 1] + [
+            (pool_values[pname][i] if i < len(pool_values[pname]) else "")
+            for pname in pool_names
+        ])
+
+    ws.update(table, f"A{start_row}")
+    end_col = chr(65 + len(pool_names))
+    ws.format(f"A{start_row}:{end_col}{start_row}", {
+        "textFormat": {"bold": True},
+        "horizontalAlignment": "CENTER",
+    })
+    if max_rows:
+        ws.format(f"A{start_row + 1}:A{start_row + max_rows}", {
+            "horizontalAlignment": "CENTER",
+        })
+    return start_row + 1 + max_rows
+
+
 def _do_validate_discipline(
     discipline_code: str,
     user_config_path: Path,
@@ -591,9 +635,18 @@ def _do_validate_discipline(
             "no 'Pool N' columns found in 'Pool standings' worksheet"
         )
 
+    # Stop before any reference table (Clubs/Seeds/Nats) written at A12+.
+    _ref_labels = {"clubs", "seeds", "nats"}
+    _fencer_end = next(
+        (i for i, row in enumerate(pool_rows[1:], 1)
+         if row and row[0].strip().lower() in _ref_labels),
+        len(pool_rows),
+    )
+    pool_fencer_rows = pool_rows[1:_fencer_end]
+
     sheet_entries: list[tuple[str, str]] = []
     for col_idx, col_name in pool_cols:
-        for row in pool_rows[1:]:
+        for row in pool_fencer_rows:
             if col_idx < len(row):
                 raw = row[col_idx].strip()
                 if raw:
@@ -628,6 +681,90 @@ def _do_validate_discipline(
 
     if not missing and not extra and not dup_names:
         lines.append(f"✅ {len(roster_names)} fencers — roster matches sheet perfectly")
+
+        # ── Weak validation: pool sizes ──────────────────────────────────────
+        pool_sizes: dict[str, int] = {
+            pool_name: sum(
+                1 for row in pool_fencer_rows
+                if col_idx < len(row) and row[col_idx].strip()
+            )
+            for col_idx, pool_name in pool_cols
+        }
+        size_warnings: list[str] = []
+        for pool_name, sz in sorted(pool_sizes.items()):
+            if sz < 5:
+                size_warnings.append(f"⚠ {pool_name}: only {sz} fencers (minimum is 5)")
+            elif sz > 7:
+                size_warnings.append(f"⚠ {pool_name}: {sz} fencers (maximum is 7)")
+        if pool_sizes:
+            min_sz = min(pool_sizes.values())
+            max_sz = max(pool_sizes.values())
+            if max_sz - min_sz >= 2:
+                size_list = ", ".join(
+                    f"{pname} ({sz})" for pname, sz in sorted(pool_sizes.items())
+                )
+                size_warnings.append(
+                    f"⚠ Pool sizes differ by {max_sz - min_sz}: {size_list}"
+                )
+        if size_warnings:
+            lines.append("")
+            lines.extend(size_warnings)
+
+        # ── Weak validation: reference tables + club distribution ────────────
+        club_col = fencer_header.index("club") if "club" in fencer_header else None
+        seed_col = fencer_header.index("seed") if "seed" in fencer_header else None
+        nat_col = next(
+            (i for i, h in enumerate(fencer_header) if h in ("nat.", "nat", "nationality")),
+            None,
+        )
+
+        name_to_club: dict[str, str] = {}
+        name_to_seed: dict[str, str] = {}
+        name_to_nat: dict[str, str] = {}
+        for row in fencer_rows:
+            if fname_col < len(row) and row[fname_col].strip():
+                key = row[fname_col].strip().lower()
+                if club_col is not None and club_col < len(row):
+                    name_to_club[key] = row[club_col].strip()
+                if seed_col is not None and seed_col < len(row):
+                    name_to_seed[key] = row[seed_col].strip()
+                if nat_col is not None and nat_col < len(row):
+                    name_to_nat[key] = row[nat_col].strip()
+
+        sorted_pool_cols = sorted(pool_cols, key=lambda x: x[0])
+
+        try:
+            next_row = 12
+            for label, col, mapping in [
+                ("Clubs", club_col, name_to_club),
+                ("Seeds", seed_col, name_to_seed),
+                ("Nats", nat_col, name_to_nat),
+            ]:
+                if col is not None:
+                    next_row = _write_pool_ref_table(
+                        pool_ws, sorted_pool_cols, pool_fencer_rows, mapping, label, next_row
+                    )
+                    next_row += 2
+        except Exception as e:
+            lines.append(f"⚠ Could not write reference tables to sheet: {e}")
+
+        if name_to_club:
+            club_warnings: list[str] = []
+            for col_idx, pool_name in sorted_pool_cols:
+                clubs_in_pool = [
+                    name_to_club.get(row[col_idx].strip().lower(), "")
+                    for row in pool_fencer_rows
+                    if col_idx < len(row) and row[col_idx].strip()
+                ]
+                counts = Counter(c for c in clubs_in_pool if c)
+                for club, cnt in sorted(counts.items()):
+                    if cnt >= 2:
+                        club_warnings.append(
+                            f"⚠ {pool_name}: {cnt} fencers from **{club}**"
+                        )
+            if club_warnings:
+                lines.append("")
+                lines.extend(club_warnings)
     else:
         lines.append(
             f"Roster: **{len(roster_names)}** | Sheet: **{len(sheet_lower_set)} unique**"

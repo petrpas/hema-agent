@@ -73,6 +73,15 @@ def _read_pools_from_sheet(sheet_url: str, creds_path: str) -> list[tuple[int, l
     if not rows:
         return []
 
+    # Stop before any reference table (Clubs/Seeds/Nats) written at A12+.
+    _ref_labels = {"clubs", "seeds", "nats"}
+    _fencer_end = next(
+        (i for i, row in enumerate(rows[1:], 1)
+         if row and row[0].strip().lower() in _ref_labels),
+        len(rows),
+    )
+    fencer_rows = rows[1:_fencer_end]
+
     header = [h.strip() for h in rows[0]]
     candidates: list[tuple[int, list[str]]] = []
     for i, h in enumerate(header):
@@ -80,7 +89,7 @@ def _read_pools_from_sheet(sheet_url: str, creds_path: str) -> list[tuple[int, l
         if not m:
             continue
         pool_no = int(m.group(1))
-        names = [row[i].strip() for row in rows[1:] if i < len(row) and row[i].strip()]
+        names = [row[i].strip() for row in fencer_rows if i < len(row) and row[i].strip()]
         if names:
             candidates.append((pool_no, names))
 
