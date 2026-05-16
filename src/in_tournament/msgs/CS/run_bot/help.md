@@ -14,6 +14,10 @@ Všechny příkazy vyžadují roli **Admin**.
 **Publikování** *(#setup nebo #bot-commands)*
 `/publish_pools <disc>` — zveřejní skupiny pro šermíře do vlákna **<disc>_pools** v #announcements
 
+**Výsledky**
+Nahrajte fotografie vyplněných výsledkových listů skupin do **#org-results-upload** — bot je zpracuje a zapíše zápasy do Google Sheetu.
+`/refresh` — okamžitě zkontroluje ověřené zápasy a zveřejní dokončené skupiny (jinak probíhá automaticky každých 30 s)
+
 **Moderování**
 `/clear` — smaže všechny zprávy v tomto kanálu kromě první
 

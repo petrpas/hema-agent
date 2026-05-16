@@ -14,6 +14,10 @@ All commands require the **Admin** role.
 **Publishing** *(#setup or #bot-commands)*
 `/publish_pools <disc>` — publish pool assignments for fencers into **<disc>_pools** thread in #announcements
 
+**Results**
+Upload photos of completed pool score sheets to **#org-results-upload** — the bot will parse them and write bouts to the Google Sheet.
+`/refresh` — check the verified sheets immediately and publish any newly-complete pools (normally happens automatically every 30 s)
+
 **Moderation**
 `/clear` — delete all messages in this channel except the first
 

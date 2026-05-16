@@ -28,6 +28,7 @@ class InUserConfig(BaseModel):
     tournament_name: str
     language: str = "EN"
     disciplines: dict = {}
+    discipline_limits: dict[str, int] = {}
     tournament_display_name: str | None = None
     data_sheet_urls: dict[str, str] = {}
 

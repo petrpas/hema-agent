@@ -41,7 +41,7 @@ Create a plain, empty Discord server (UI: **Add a Server → Create My Own → F
    |---|---|
    | Create Invite | Mint the Organizer and Guest invite links |
    | Manage Guild | List existing invites (required for auto-role on join) |
-   | Manage Roles | Create Organizer / Guest / Bot roles and assign them on join |
+   | Manage Roles | Create Admin / Organizer / Guest / Bot roles and assign them on join |
    | Manage Channels | Create the three categories and twelve channels |
    | View Channels | Read any channel |
    | Send Messages | Post in text channels |
@@ -87,7 +87,7 @@ In any channel the bot can see (or in the server's default channel), run the sla
 
 This is idempotent — safe to run multiple times. Each run:
 
-1. **Creates roles** (if missing): `Organizer`, `Guest`, `Bot`
+1. **Creates roles** (if missing): `Admin`, `Organizer`, `Guest`, `Bot`
 2. **Locks down visibility**: `@everyone` is denied *View Channel* at the guild level — a user with no role sees nothing
 3. **Creates three categories and twelve channels**:
 
@@ -118,31 +118,88 @@ This is idempotent — safe to run multiple times. Each run:
    | `#org-results-upload` | read-write | invisible |
    | `#bot-commands` | read-write | invisible |
 
-4. **Mints two permanent invite links** (no expiry, unlimited uses):
+4. **Mints three permanent invite links** (no expiry, unlimited uses):
+   - **Admin invite** — members joining via this link auto-receive the `Admin` role
    - **Organizer invite** — members joining via this link auto-receive the `Organizer` role
    - **Guest invite** — members joining via this link auto-receive the `Guest` role
-5. **Generates QR PNG files** for both invites and posts them as the `/setup` reply
+5. **Generates QR PNG files** for each invite and posts them as the `/setup` reply
 
-   Files are saved to: `data/run_bot/<guild_id>/qr_organizer.png` and `qr_guest.png`
+   Files are saved to: `data/run_bot/<guild_id>/qr_admin.png`, `qr_organizer.png`, `qr_guest.png`
 
    Print and post the QR codes at the venue — fencers scan the Guest QR to join, staff scan the Organizer QR.
 
 ---
 
-## 6. Complete the setup dialogue in `#setup`
+## 6. Configure the tournament in `#setup`
 
-After `/setup`, the bot seeds `#setup` with a welcome message. Go to `#setup` and follow the prompts:
+After `/setup`, the bot seeds `#setup` with a welcome message. You have two ways to configure the tournament — both require the `Admin` role.
 
-1. **Language** — reply with your preferred language (EN, CS, or any other ISO code)
+### Option A — slash command (recommended)
+
+Run `/configure` in `#setup`. A modal form appears with three fields:
+
+| Field | Example |
+|---|---|
+| Tournament name | `Prague Open 2026` |
+| Language | `EN`, `CS`, `DE`, `FR`, `ES`, `IT`, `PL`, `SK`, `HU`, `RU` |
+| Disciplines | `LS, SAW, SB` (comma-separated codes) |
+
+After submitting, you are shown a confirmation step. **Confirming wipes all channel messages** before saving the configuration — treat it as a clean-slate operation.
+
+Valid discipline codes: `LS`, `LSW`, `LSM`, `SA`, `SAW`, `SAM`, `RA`, `RAW`, `RAM`, `RD`, `RDW`, `RDM`, `SB`, `SBW`, `SBM`, `Plastic LS`, `Plastic LSW`, `Plastic SA`, `Plastic SAW`, `Plastic RA`, `Plastic SB`.
+
+### Option B — AI dialogue
+
+Go to `#setup` and write a free-text message describing what you want. The setup agent will ask for:
+
+1. **Language** — e.g. "use Czech"
 2. **Tournament name** — e.g. "NA Open 2025"
-3. **Disciplines** — describe what will be held (e.g. "longsword open, longsword women, sabre open")
+3. **Disciplines** — e.g. "longsword open, longsword women, sabre open"
 4. **Participant counts** — expected number of fencers per discipline
 
-The bot maps your descriptions to internal discipline codes, shows a confirmation table, and writes `user_config.json` once you confirm. You can return to `#setup` at any time to update the name, disciplines, or counts — just describe what you want to change.
+The agent maps descriptions to internal codes, shows a confirmation table, and writes `user_config.json` once you confirm. You can return to `#setup` at any time to update settings — just describe what you want to change.
 
 ---
 
-## 7. Share the invite links
+## 7. Pool management
+
+Once pool assignments have been decided and result sheets filled in, use the following slash commands (all require `Admin` role, run in `#setup` or `#bot-commands`):
+
+### Create data entry sheets
+
+```
+/create_pool_sheets
+```
+
+Creates one Google Sheet per discipline from the Drive template. Links are posted to `#setup`.
+
+### Validate pool sheets
+
+```
+/validate_pools [disc]
+```
+
+Checks each discipline's pool sheet against the tournament roster. Leave `disc` empty to check all disciplines. Results are posted as threads in `#setup` (`<disc>_pools_validation`).
+
+### Render pool tables
+
+```
+/render_pools [disc]
+```
+
+Renders pool tables as PDFs and posts them to `#setup` → `<disc>_pool_tables` thread. Leave `disc` empty to render all disciplines.
+
+### Publish pool tables to fencers
+
+```
+/publish_pools <disc>
+```
+
+Publishes the rendered pool tables to `#announcements` → `<disc>_pools` thread, visible to Guests.
+
+---
+
+## 8. Share the invite links
 
 After `/setup` you have two ways to share the links with attendees:
 
@@ -151,13 +208,13 @@ After `/setup` you have two ways to share the links with attendees:
 
 ---
 
-## 8. Restarting after code changes
+## 9. Restarting after code changes
 
 Stop the bot process and restart it — no other steps needed. The invite links and `user_config.json` are persisted on disk and survive restarts. Re-running `/setup` after a restart is safe and will drift-correct any permissions that diverged.
 
 ---
 
-## 9. Multiple tournaments
+## 10. Multiple tournaments
 
 Each tournament needs its own Discord server, its own bot application, and its own `DISCORD_TOKEN`. Run one bot process per tournament (each gets its own lock file at `/tmp/hema-run-bot.lock`).
 
@@ -170,7 +227,7 @@ BOT_LOCK_FILE=/tmp/hema-run-eu2025.lock DISCORD_TOKEN=... python -m discord_bot.
 
 ---
 
-## 10. Troubleshooting
+## 11. Troubleshooting
 
 **Slash commands not appearing after bot restart**
 
