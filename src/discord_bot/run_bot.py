@@ -535,7 +535,7 @@ def _standings_embed(disc: str, rows: list[dict]) -> discord.Embed:
     sep = "─" * (sum(widths) + 10)
     lines = [_fmt(header), sep] + [_fmt(r) for r in table_rows]
     return discord.Embed(
-        title=f"{disc} — Pool Stage Standings",
+        title=f"{disc} — Pool Stage Results",
         description="```\n" + "\n".join(lines) + "\n```",
         colour=_disc_colour(disc),
     )
@@ -847,7 +847,7 @@ class SetupCommandsCog(commands.Cog):
                 _do_validate_discipline, code, user_config, data_root
             )
 
-            thread_name = f"{code}_pools_validation"
+            thread_name = f"{code} Pool Validation"
             thread = await _get_or_create_thread(setup_ch, thread_name)
             await send_long(thread, report)
             posted.append(f"**{code}** → {thread_name}")
@@ -859,7 +859,7 @@ class SetupCommandsCog(commands.Cog):
 
     @app_commands.command(
         name="render_pools",
-        description="Render pool table PDFs and post to #setup → <disc>_pool_tables thread",
+        description="Render pool table PDFs and post to #setup → <disc> Pool Tables thread",
     )
     @app_commands.describe(disc="Discipline code, e.g. LS, SAW. Leave empty to render all.")
     @_admin_only()
@@ -919,7 +919,7 @@ class SetupCommandsCog(commands.Cog):
                 await interaction.followup.send(f"❌ {code}: unexpected error: {e}", ephemeral=True)
                 continue
 
-            thread_name = f"{code}_pool_tables"
+            thread_name = f"{code} Pool Tables"
             thread = await _get_or_create_thread(setup_ch, thread_name)
 
             disc_name = DISCIPLINE_NAMES[code]
@@ -940,7 +940,7 @@ class SetupCommandsCog(commands.Cog):
 
     @app_commands.command(
         name="publish_pools",
-        description="Publish pool tables for fencers into #announcements → <disc>_pools thread",
+        description="Publish pool assignments for fencers into #announcements → <disc> Pools thread",
     )
     @app_commands.describe(disc="Discipline code, e.g. LS, SAW")
     @_admin_only()
@@ -979,7 +979,7 @@ class SetupCommandsCog(commands.Cog):
             )
             return
 
-        thread_name = f"{disc}_pools"
+        thread_name = f"{disc} Pools"
         thread = await _get_or_create_thread(ann_ch, thread_name)
 
         colour = _disc_colour(disc)
@@ -1043,20 +1043,20 @@ class SetupCommandsCog(commands.Cog):
         if warnings:
             setup_ch = discord.utils.get(interaction.guild.text_channels, name=SETUP_CHANNEL)
             if setup_ch is not None:
-                thread = await _get_or_create_thread(setup_ch, f"{disc}_pool_results")
+                thread = await _get_or_create_thread(setup_ch, f"{disc} Pool Results")
                 header = f"**{disc} Pool Results — Validation ({len(warnings)} issue(s))**"
                 await send_long(thread, header + "\n" + "\n".join(warnings))
 
         msg = f"✅ **{disc}** — {len(rows)} fencer(s) written to Pool Results sheet."
         if warnings:
-            msg += f"\n⚠ {len(warnings)} issue(s) — see **{disc}_pool_results** thread in #{SETUP_CHANNEL}."
+            msg += f"\n⚠ {len(warnings)} issue(s) — see **{disc} Pool Results** thread in #{SETUP_CHANNEL}."
         else:
             msg += " No validation issues."
         await interaction.followup.send(msg, ephemeral=True)
 
     @app_commands.command(
         name="pub_pool_res",
-        description="Render pool standings as PDF+PNG and post to setup thread",
+        description="Render pool-stage results as PDF+PNG and post to #setup and #results",
     )
     @app_commands.describe(disc="Discipline code, e.g. LS")
     @_admin_only()
@@ -1098,7 +1098,7 @@ class SetupCommandsCog(commands.Cog):
             await interaction.followup.send("❌ #setup channel not found.", ephemeral=True)
             return
 
-        setup_thread = await _get_or_create_thread(setup_ch, f"{disc}_pool_results")
+        setup_thread = await _get_or_create_thread(setup_ch, f"{disc} Pool Results")
         await setup_thread.send(
             f"**{disc}** — Pool Results",
             files=[
@@ -1113,7 +1113,7 @@ class SetupCommandsCog(commands.Cog):
             await results_thread.send(embed=_standings_embed(disc, rows))
 
         await interaction.followup.send(
-            f"✅ Pool results for **{disc}** posted to **{disc}_pool_results** in #{SETUP_CHANNEL}"
+            f"✅ Pool results for **{disc}** posted to **{disc} Pool Results** in #{SETUP_CHANNEL}"
             + (f" and **{disc} Pool Results** in #{RESULTS_CHANNEL}." if results_ch is not None else "."),
             ephemeral=True,
         )
@@ -1289,14 +1289,14 @@ class ResultsCog(commands.Cog):
         stats = compute_pool_stats(fencers, bouts)
         await thread.send(embeds=[
             discord.Embed(
-                title=f"{disc} Pool {pool_id.split('-', 1)[1]} Results",
+                title=f"{disc} Pool {pool_id.split('-', 1)[1]} Matches",
                 description=_stats_table(stats),
                 colour=_disc_colour(disc),
             ),
             _bouts_embed(pool_id, disc, bouts),
         ])
         if ann_ch is not None:
-            await ann_ch.send(f"📊 **{pool_id}** results are in — see <#{results_ch.id}>")
+            await ann_ch.send(f"📊 **{pool_id}** matches posted — see <#{results_ch.id}>")
 
     async def _publish_ranking(
         self,
@@ -1314,12 +1314,12 @@ class ResultsCog(commands.Cog):
         thread = await _get_or_create_thread(results_ch, f"{disc} Pool Results")
         stats = compute_pool_stats(all_fencers, bouts)
         await thread.send(embed=discord.Embed(
-            title=f"{disc} — {disc_name} · Pool Stage Ranking",
+            title=f"{disc} — {disc_name} · Pool Stage Results",
             description=_stats_table(stats),
             colour=_disc_colour(disc),
         ))
         if ann_ch is not None:
-            await ann_ch.send(f"🏆 **{disc_name}** pool-stage ranking posted — see <#{results_ch.id}>")
+            await ann_ch.send(f"🏆 **{disc_name}** pool stage results posted — see <#{results_ch.id}>")
 
     # ── Slash commands ────────────────────────────────────────────────────────
 
@@ -1342,12 +1342,12 @@ class ResultsCog(commands.Cog):
             await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
 
     @app_commands.command(
-        name="repub_pool_res",
-        description="Manually publish results for a specific pool from the verified sheet",
+        name="repub_pool_matches",
+        description="Manually publish matches for a specific pool from the verified sheet",
     )
     @app_commands.describe(disc="Discipline code, e.g. LS", pool_no="Pool number, e.g. 3")
     @_admin_only()
-    async def repub_pool_res(
+    async def repub_pool_matches(
         self, interaction: discord.Interaction, disc: str, pool_no: int
     ) -> None:
         guild = interaction.guild
@@ -1379,7 +1379,7 @@ class ResultsCog(commands.Cog):
                 read_verified_bouts, sheet_url, config.creds_path
             )
         except Exception as e:
-            log.exception("republish_pool: sheet read failed for %s", pool_id)
+            log.exception("repub_pool_matches: sheet read failed for %s", pool_id)
             await interaction.followup.send(f"❌ Failed to read sheet: {e}", ephemeral=True)
             return
 

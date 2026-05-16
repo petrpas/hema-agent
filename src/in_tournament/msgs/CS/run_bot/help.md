@@ -9,17 +9,17 @@ Všechny příkazy vyžadují roli **Admin**.
 `/configure` — nastaví název turnaje, jazyk a disciplíny (otevře formulář; po potvrzení smaže historii kanálů)
 `/create_pool_sheets` — vytvoří jeden Google Sheet pro každou disciplínu
 `/validate_pools [disc]` — zkontroluje skupiny oproti seznamu účastníků (výchozí: všechny disciplíny)
-`/render_pools [disc]` — vykreslí skupiny jako PDF do vlákna **<disc>_pool_tables** v #setup
-`/calc_pools <disc>` — vypočítá výsledky skupin z ověřeného listu a zapíše je do listu Pool Results; problémy při validaci se zobrazí ve vlákně **<disc>_pool_results** v #setup
-`/pub_pool_res <disc>` — vykreslí list Pool Results jako PDF+PNG a zveřejní ho ve vlákně **<disc>_pool_results** v #setup
+`/render_pools [disc]` — vykreslí skupiny jako PDF do vlákna **<disc> Pool Tables** v #setup
+`/calc_pools <disc>` — vypočítá výsledky skupin z ověřeného listu a zapíše je do listu Pool Results; problémy při validaci se zobrazí ve vlákně **<disc> Pool Results** v #setup
+`/pub_pool_res <disc>` — vykreslí list Pool Results jako PDF+PNG a zveřejní ho do **<disc> Pool Results** v #setup a **<disc> Pool Results** v #results
 
 **Publikování** *(#setup nebo #bot-commands)*
-`/publish_pools <disc>` — zveřejní skupiny pro šermíře do vlákna **<disc>_pools** v #announcements
+`/publish_pools <disc>` — zveřejní skupiny pro šermíře do vlákna **<disc> Pools** v #announcements
 
 **Výsledky**
 Nahrajte fotografie vyplněných výsledkových listů skupin do **#org-results-upload** — bot je zpracuje a zapíše zápasy do Google Sheetu.
 `/refresh` — okamžitě zkontroluje ověřené zápasy a zveřejní dokončené skupiny (jinak probíhá automaticky každých 30 s)
-`/repub_pool_res <disc> <pool_no>` — ručně zveřejní konkrétní skupinu z ověřeného listu (např. `/republish_pool LS 3`)
+`/repub_pool_matches <disc> <pool_no>` — ručně zveřejní zápasy konkrétní skupiny z ověřeného listu (např. `/repub_pool_matches LS 3`)
 
 **Moderování**
 `/clear` — smaže všechny zprávy v tomto kanálu kromě první

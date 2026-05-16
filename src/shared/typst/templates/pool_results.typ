@@ -13,7 +13,7 @@
   scope: "parent",
   float: true,
   text(1.4em, weight: "bold")[
-    {{tournament}} #h(1fr) {{discipline}} -- Order after Pools
+    {{tournament}} #h(1fr) {{discipline}} -- Pool Results
   ],
 )
 
