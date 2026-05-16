@@ -508,6 +508,38 @@ def _stats_table(stats: list[dict]) -> str:
     return "```\n" + "\n".join(lines) + "\n```"
 
 
+def _standings_embed(disc: str, rows: list[dict]) -> discord.Embed:
+    """Embed showing the ordered pool-stage standings from the Pool Results sheet."""
+    header = ("#", "Name", "V/M", "Ind", "TS", "TR")
+    table_rows: list[tuple] = []
+    for r in rows:
+        try:
+            ind_str = f"{int(r['index']):+d}"
+        except (ValueError, TypeError):
+            ind_str = str(r.get("index", ""))
+        table_rows.append((r["ord"], r["name"], r["wm"], ind_str, r["ts"], r["tr"]))
+    all_rows = [header] + table_rows
+    widths = [max(len(str(row[i])) for row in all_rows) for i in range(6)]
+
+    def _fmt(row: tuple) -> str:
+        return (
+            f"{str(row[0]):>{widths[0]}}  "
+            f"{str(row[1]):<{widths[1]}}  "
+            f"{str(row[2]):>{widths[2]}}  "
+            f"{str(row[3]):>{widths[3]}}  "
+            f"{str(row[4]):>{widths[4]}}  "
+            f"{str(row[5]):>{widths[5]}}"
+        )
+
+    sep = "─" * (sum(widths) + 10)
+    lines = [_fmt(header), sep] + [_fmt(r) for r in table_rows]
+    return discord.Embed(
+        title=f"{disc} — Pool Stage Standings",
+        description="```\n" + "\n".join(lines) + "\n```",
+        colour=_disc_colour(disc),
+    )
+
+
 def _bouts_embed(pool_id: str, disc: str, bouts: list[dict]) -> discord.Embed:
     """Embed listing every bout with the winner's name in bold."""
     lines: list[str] = []
@@ -1049,12 +1081,11 @@ class SetupCommandsCog(commands.Cog):
         await interaction.response.defer(ephemeral=True)
 
         tournament = config.tournament_display_name or config.tournament_name
-        discipline = (config.disciplines or {}).get(disc, disc)
 
         try:
-            (pdf_name, pdf_bytes), (png_name, png_bytes) = await asyncio.to_thread(
+            (pdf_name, pdf_bytes), (png_name, png_bytes), rows = await asyncio.to_thread(
                 render_pool_results_for_disc,
-                disc, sheet_url, config.creds_path, tournament, discipline,
+                disc, sheet_url, config.creds_path, tournament, disc,
             )
         except Exception as e:
             log.exception("pub_pool_res failed for %s", disc)
@@ -1066,16 +1097,23 @@ class SetupCommandsCog(commands.Cog):
             await interaction.followup.send("❌ #setup channel not found.", ephemeral=True)
             return
 
-        thread = await _get_or_create_thread(setup_ch, f"{disc}_pool_results")
-        await thread.send(
-            f"**{disc}** — {discipline} · Pool Results",
+        setup_thread = await _get_or_create_thread(setup_ch, f"{disc}_pool_results")
+        await setup_thread.send(
+            f"**{disc}** — Pool Results",
             files=[
                 discord.File(io.BytesIO(png_bytes), filename=png_name),
                 discord.File(io.BytesIO(pdf_bytes), filename=pdf_name),
             ],
         )
+
+        results_ch = discord.utils.get(interaction.guild.text_channels, name=RESULTS_CHANNEL)
+        if results_ch is not None:
+            results_thread = await _get_or_create_thread(results_ch, f"{disc} Pool Results")
+            await results_thread.send(embed=_standings_embed(disc, rows))
+
         await interaction.followup.send(
-            f"✅ Pool results for **{disc}** posted to **{disc}_pool_results** thread in #{SETUP_CHANNEL}.",
+            f"✅ Pool results for **{disc}** posted to **{disc}_pool_results** in #{SETUP_CHANNEL}"
+            + (f" and **{disc} Pool Results** in #{RESULTS_CHANNEL}." if results_ch is not None else "."),
             ephemeral=True,
         )
 
@@ -1246,7 +1284,7 @@ class ResultsCog(commands.Cog):
         if results_ch is None:
             log.warning("No #%s channel in guild %d — cannot publish %s", RESULTS_CHANNEL, guild.id, pool_id)
             return
-        thread = await _get_or_create_thread(results_ch, f"{disc} Pool Results")
+        thread = await _get_or_create_thread(results_ch, f"{disc} Pool Matches")
         stats = compute_pool_stats(fencers, bouts)
         await thread.send(embeds=[
             discord.Embed(
@@ -1272,7 +1310,7 @@ class ResultsCog(commands.Cog):
             return
         config = self.bot.config
         disc_name = (config.disciplines or {}).get(disc, disc) if config else disc
-        thread = await _get_or_create_thread(results_ch, f"{disc} Pool Results")
+        thread = await _get_or_create_thread(results_ch, f"{disc} Pool Matches")
         stats = compute_pool_stats(all_fencers, bouts)
         await thread.send(embed=discord.Embed(
             title=f"{disc} — {disc_name} · Pool Stage Ranking",

@@ -1,4 +1,4 @@
-#set page(paper:"a4", margin: 1.75cm)
+#set page(paper:"a4", margin: 1.25cm)
 #set text(font: "GFS Neohellenic", size: 15pt)
 
 #show table.header: set text(weight: "bold")
@@ -16,8 +16,6 @@
     {{tournament}} #h(1fr) {{discipline}} -- Order after Pools
   ],
 )
-
-#v(2em)
 
 #set table(
   stroke: (x, y) => if y == 0 {

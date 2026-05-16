@@ -302,10 +302,10 @@ def render_pool_results_for_disc(
     creds_path: str,
     tournament: str,
     discipline: str,
-) -> tuple[tuple[str, bytes], tuple[str, bytes]]:
+) -> tuple[tuple[str, bytes], tuple[str, bytes], list[dict]]:
     """Read 'Pool results' worksheet and render it to PDF and PNG.
 
-    Returns ((pdf_filename, pdf_bytes), (png_filename, png_bytes)).
+    Returns ((pdf_filename, pdf_bytes), (png_filename, png_bytes), rows).
     Raises ValueError if the worksheet is missing or has no data rows.
     """
     import gspread
@@ -337,7 +337,7 @@ def render_pool_results_for_disc(
 
     png_bytes: bytes = png_result[0] if isinstance(png_result, list) else png_result
     log.info("Rendered pool results for %s: %d rows", disc_code, len(rows))
-    return (f"{disc_code}_pool_results.pdf", pdf_bytes), (f"{disc_code}_pool_results.png", png_bytes)
+    return (f"{disc_code}_pool_results.pdf", pdf_bytes), (f"{disc_code}_pool_results.png", png_bytes), rows
 
 
 def render_pools_for_disc(
