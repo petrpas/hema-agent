@@ -46,6 +46,7 @@ from in_tournament.results_agent.sheet_io import (
     write_pool_bouts,
 )
 from in_tournament.msgs import read_msg as _read_in_msg
+from in_tournament.render_declaration import load_fencer_names_from_sheets, render_declaration_pdf
 from in_tournament.render_pools import (
     read_pools_for_disc,
     render_pool_results_for_disc,
@@ -1115,6 +1116,54 @@ class SetupCommandsCog(commands.Cog):
         await interaction.followup.send(
             f"✅ Pool results for **{disc}** posted to **{disc} Pool Results** in #{SETUP_CHANNEL}"
             + (f" and **{disc} Pool Results** in #{RESULTS_CHANNEL}." if results_ch is not None else "."),
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="render_declaration",
+        description="Render participant declaration form as PDF and post to #setup",
+    )
+    @app_commands.describe(date="Date as it should appear on the form, e.g. '24. 5. 2026'")
+    @_admin_only()
+    @_in_setup()
+    async def render_declaration(self, interaction: discord.Interaction, date: str) -> None:
+        await interaction.response.defer(ephemeral=True)
+
+        config = self.bot.config
+        if config is None:
+            await interaction.followup.send("⚠ No tournament config loaded.", ephemeral=True)
+            return
+
+        if not config.data_sheet_urls:
+            await interaction.followup.send(
+                "⚠ No discipline sheets configured — run /configure first.",
+                ephemeral=True,
+            )
+            return
+
+        names = await asyncio.to_thread(
+            load_fencer_names_from_sheets, config.data_sheet_urls, config.creds_path
+        )
+        if not names:
+            await interaction.followup.send(
+                "⚠ No fencer data found — run the registration pipeline first.",
+                ephemeral=True,
+            )
+            return
+
+        tournament_name = config.tournament_display_name or config.tournament_name
+        pdf_bytes = await asyncio.to_thread(
+            render_declaration_pdf, names, tournament_name, date
+        )
+
+        setup_ch = discord.utils.get(interaction.guild.text_channels, name=SETUP_CHANNEL)
+        filename = f"declaration_{config.tournament_name}.pdf"
+        await setup_ch.send(
+            f"Declaration form — {len(names)} fencers — {date}",
+            file=discord.File(io.BytesIO(pdf_bytes), filename=filename),
+        )
+        await interaction.followup.send(
+            f"✅ Declaration PDF ({len(names)} fencers) posted to #{SETUP_CHANNEL}.",
             ephemeral=True,
         )
 

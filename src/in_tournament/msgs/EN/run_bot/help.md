@@ -12,6 +12,7 @@ All commands require the **Admin** role.
 `/render_pools [disc]` — render pool tables as PDFs into **<disc> Pool Tables** thread in #setup
 `/calc_pools <disc>` — calculate pool-stage results from the verified sheet and write to Pool Results sheet; validation issues go to **<disc> Pool Results** thread in #setup
 `/pub_pool_res <disc>` — render Pool Results sheet as PDF+PNG and post to **<disc> Pool Results** in #setup and **<disc> Pool Results** in #results
+`/render_declaration <date>` — render participant declaration form as PDF (all disciplines combined, sorted by surname) and post to #setup
 
 **Publishing** *(#setup or #bot-commands)*
 `/publish_pools <disc>` — publish pool assignments for fencers into **<disc> Pools** thread in #announcements
