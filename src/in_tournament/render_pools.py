@@ -244,6 +244,102 @@ def render_pools_list_for_disc(
     return filename, pdf_bytes
 
 
+_TYPST_MINUS = "−"  # U+2212 MINUS SIGN (used in pool results template)
+
+
+def _read_pool_results_rows(sh) -> list[dict]:
+    """Read 'Pool results' worksheet → list of row dicts (positional columns)."""
+    import gspread
+    try:
+        ws = sh.worksheet("Pool results")
+    except gspread.WorksheetNotFound:
+        raise ValueError("'Pool results' worksheet not found in data sheet")
+    rows = ws.get_all_values()
+    if len(rows) < 2:
+        return []
+    def _col(row: list, i: int) -> str:
+        return row[i].strip() if i < len(row) else ""
+
+    result = []
+    for row in rows[1:]:
+        if not row or not row[0].strip():
+            continue
+        result.append({
+            "ord":     _col(row, 0),
+            "name":    _col(row, 1),
+            "nat":     _col(row, 2),
+            "club":    _col(row, 3),
+            "matches": _col(row, 4),
+            "victory": _col(row, 5),
+            "wm":      _col(row, 6),
+            "ts":      _col(row, 7),
+            "tr":      _col(row, 8),
+            "index":   _col(row, 9),
+        })
+    return result
+
+
+def _build_pool_results_table(rows: list[dict]) -> str:
+    """Render pool result rows as Typst table cells for pool_results.typ."""
+    lines = []
+    for r in rows:
+        try:
+            ind = int(r["index"])
+            ind_str = f"+{ind}" if ind >= 0 else f"{_TYPST_MINUS}{abs(ind)}"
+        except (ValueError, TypeError):
+            ind_str = str(r.get("index", "0"))
+        lines.append(
+            f"  [{r['ord']}], [{_escape_typst(r['name'])}], [{_escape_typst(r['club'])}], "
+            f"[*{r['victory']}* / *{r['matches']}*], [*{ind_str}*], "
+            f"[=], [{r['ts']}], [{_TYPST_MINUS}], [{r['tr']}],"
+        )
+    return "\n".join(lines)
+
+
+def render_pool_results_for_disc(
+    disc_code: str,
+    sheet_url: str,
+    creds_path: str,
+    tournament: str,
+    discipline: str,
+) -> tuple[tuple[str, bytes], tuple[str, bytes]]:
+    """Read 'Pool results' worksheet and render it to PDF and PNG.
+
+    Returns ((pdf_filename, pdf_bytes), (png_filename, png_bytes)).
+    Raises ValueError if the worksheet is missing or has no data rows.
+    """
+    import gspread
+    import typst
+
+    gc = gspread.service_account(filename=creds_path)
+    sh = gc.open_by_url(sheet_url)
+    rows = _read_pool_results_rows(sh)
+    if not rows:
+        raise ValueError(f"No data in 'Pool results' worksheet for {disc_code} — run /calc_pools first")
+
+    table_content = _build_pool_results_table(rows)
+    template = (_TEMPLATES_DIR / "pool_results.typ").read_text(encoding="utf-8")
+    source = (
+        template
+        .replace("{{tournament}}", _escape_typst(tournament))
+        .replace("{{discipline}}", _escape_typst(discipline))
+        .replace("{{table_content}}", table_content)
+    )
+
+    with tempfile.NamedTemporaryFile(suffix=".typ", mode="w", encoding="utf-8", delete=False) as f:
+        f.write(source)
+        tmp = Path(f.name)
+    try:
+        pdf_bytes = typst.compile(str(tmp), format="pdf", font_paths=[str(_FONTS_DIR)])
+        png_result = typst.compile(str(tmp), format="png", font_paths=[str(_FONTS_DIR)])
+    finally:
+        tmp.unlink(missing_ok=True)
+
+    png_bytes: bytes = png_result[0] if isinstance(png_result, list) else png_result
+    log.info("Rendered pool results for %s: %d rows", disc_code, len(rows))
+    return (f"{disc_code}_pool_results.pdf", pdf_bytes), (f"{disc_code}_pool_results.png", png_bytes)
+
+
 def render_pools_for_disc(
     disc_code: str,
     user_config_path: Path,

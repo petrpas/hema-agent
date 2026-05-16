@@ -46,7 +46,12 @@ from in_tournament.results_agent.sheet_io import (
     write_pool_bouts,
 )
 from in_tournament.msgs import read_msg as _read_in_msg
-from in_tournament.render_pools import read_pools_for_disc, render_pools_for_disc, render_pools_list_for_disc
+from in_tournament.render_pools import (
+    read_pools_for_disc,
+    render_pool_results_for_disc,
+    render_pools_for_disc,
+    render_pools_list_for_disc,
+)
 from in_tournament.run_setup_agent.run_setup_agent import (
     DISCIPLINE_NAMES,
     _DEFAULT_USER_CONFIG,
@@ -1015,6 +1020,64 @@ class SetupCommandsCog(commands.Cog):
         else:
             msg += " No validation issues."
         await interaction.followup.send(msg, ephemeral=True)
+
+    @app_commands.command(
+        name="pub_pool_res",
+        description="Render pool standings as PDF+PNG and post to setup thread",
+    )
+    @app_commands.describe(disc="Discipline code, e.g. LS")
+    @_admin_only()
+    @_in_setup()
+    async def pub_pool_res(self, interaction: discord.Interaction, disc: str) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
+            return
+
+        config = self.bot.config
+        if config is None:
+            await interaction.response.send_message("Bot is not configured yet.", ephemeral=True)
+            return
+
+        disc = disc.strip().upper()
+        sheet_url = config.data_sheet_urls.get(disc)
+        if not sheet_url:
+            await interaction.response.send_message(
+                f"No data sheet configured for discipline **{disc}**.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        tournament = config.tournament_display_name or config.tournament_name
+        discipline = (config.disciplines or {}).get(disc, disc)
+
+        try:
+            (pdf_name, pdf_bytes), (png_name, png_bytes) = await asyncio.to_thread(
+                render_pool_results_for_disc,
+                disc, sheet_url, config.creds_path, tournament, discipline,
+            )
+        except Exception as e:
+            log.exception("pub_pool_res failed for %s", disc)
+            await interaction.followup.send(f"❌ {e}", ephemeral=True)
+            return
+
+        setup_ch = discord.utils.get(interaction.guild.text_channels, name=SETUP_CHANNEL)
+        if setup_ch is None:
+            await interaction.followup.send("❌ #setup channel not found.", ephemeral=True)
+            return
+
+        thread = await _get_or_create_thread(setup_ch, f"{disc}_pool_results")
+        await thread.send(
+            f"**{disc}** — {discipline} · Pool Results",
+            files=[
+                discord.File(io.BytesIO(png_bytes), filename=png_name),
+                discord.File(io.BytesIO(pdf_bytes), filename=pdf_name),
+            ],
+        )
+        await interaction.followup.send(
+            f"✅ Pool results for **{disc}** posted to **{disc}_pool_results** thread in #{SETUP_CHANNEL}.",
+            ephemeral=True,
+        )
 
 
 class ResultsCog(commands.Cog):

@@ -11,6 +11,7 @@ All commands require the **Admin** role.
 `/validate_pools [disc]` — check pool sheets against the tournament roster (default: all disciplines)
 `/render_pools [disc]` — render pool tables as PDFs into **<disc>_pool_tables** thread in #setup
 `/calc_pools <disc>` — calculate pool-stage standings from the verified sheet and write to Pool Results sheet; validation issues go to **<disc>_pool_results** thread in #setup
+`/pub_pool_res <disc>` — render Pool Results sheet as PDF+PNG and post to **<disc>_pool_results** thread in #setup
 
 **Publishing** *(#setup or #bot-commands)*
 `/publish_pools <disc>` — publish pool assignments for fencers into **<disc>_pools** thread in #announcements

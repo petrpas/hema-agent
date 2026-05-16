@@ -11,6 +11,7 @@ Všechny příkazy vyžadují roli **Admin**.
 `/validate_pools [disc]` — zkontroluje skupiny oproti seznamu účastníků (výchozí: všechny disciplíny)
 `/render_pools [disc]` — vykreslí skupiny jako PDF do vlákna **<disc>_pool_tables** v #setup
 `/calc_pools <disc>` — vypočítá výsledky skupin z ověřeného listu a zapíše je do listu Pool Results; problémy při validaci se zobrazí ve vlákně **<disc>_pool_results** v #setup
+`/pub_pool_res <disc>` — vykreslí list Pool Results jako PDF+PNG a zveřejní ho ve vlákně **<disc>_pool_results** v #setup
 
 **Publikování** *(#setup nebo #bot-commands)*
 `/publish_pools <disc>` — zveřejní skupiny pro šermíře do vlákna **<disc>_pools** v #announcements
