@@ -517,7 +517,8 @@ def _standings_embed(disc: str, rows: list[dict]) -> discord.Embed:
             ind_str = f"{int(r['index']):+d}"
         except (ValueError, TypeError):
             ind_str = str(r.get("index", ""))
-        table_rows.append((r["ord"], r["name"], r["wm"], ind_str, r["ts"], r["tr"]))
+        vm = f"{r['victory']}/{r['matches']}"
+        table_rows.append((r["ord"], r["name"], vm, ind_str, r["ts"], r["tr"]))
     all_rows = [header] + table_rows
     widths = [max(len(str(row[i])) for row in all_rows) for i in range(6)]
 
@@ -1310,7 +1311,7 @@ class ResultsCog(commands.Cog):
             return
         config = self.bot.config
         disc_name = (config.disciplines or {}).get(disc, disc) if config else disc
-        thread = await _get_or_create_thread(results_ch, f"{disc} Pool Matches")
+        thread = await _get_or_create_thread(results_ch, f"{disc} Pool Results")
         stats = compute_pool_stats(all_fencers, bouts)
         await thread.send(embed=discord.Embed(
             title=f"{disc} — {disc_name} · Pool Stage Ranking",
