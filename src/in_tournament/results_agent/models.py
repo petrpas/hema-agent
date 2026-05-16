@@ -49,5 +49,5 @@ class PoolResult(BaseModel):
     disc: str               # "LS"
     pool_no: int | None     # None if unreadable from the sheet
     bouts: list[BoutResult]
-    confidence: str         # "?" clean / "??" needs review / "???" unreadable
+    confidence: str         # "." clean / "?" needs review / "??" unreadable
     issues: list[str]       # human-readable verification problems

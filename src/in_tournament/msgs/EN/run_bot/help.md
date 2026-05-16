@@ -17,6 +17,7 @@ All commands require the **Admin** role.
 **Results**
 Upload photos of completed pool score sheets to **#org-results-upload** — the bot will parse them and write bouts to the Google Sheet.
 `/refresh` — check the verified sheets immediately and publish any newly-complete pools (normally happens automatically every 30 s)
+`/repub_pool_res <disc> <pool_no>` — manually publish a specific pool from the verified sheet (e.g. `/republish_pool LS 3`)
 
 **Moderation**
 `/clear` — delete all messages in this channel except the first

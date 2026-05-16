@@ -11,7 +11,6 @@ if str(_SRC_ROOT) not in sys.path:
 from pydantic_ai import Agent
 from pydantic_ai.messages import BinaryContent
 
-from discord_bot.discord_utils import make_table
 from in_tournament.msgs import read_msg as _read_msg
 from in_tournament.results_agent.models import BoutOutcome, BoutResult, ParsedPool, PoolResult
 
@@ -153,7 +152,7 @@ def _make_pool_result(parsed: ParsedPool, issues: list[str]) -> PoolResult:
     llm_low = parsed.low_confidence
     n_issues = len(issues)
     if n_issues == 0 and not llm_low:
-        confidence = ""
+        confidence = "."
     elif n_issues >= 3 or (n_issues >= 1 and llm_low):
         confidence = "??"
     else:
@@ -254,39 +253,3 @@ def compute_pool_stats(fencer_names: list[str], bouts: list[dict]) -> list[dict]
     return result
 
 
-def format_pool_summary(pool_id: str, stats: list[dict]) -> str:
-    """Return a Discord-ready pool results message."""
-    header = ["#", "Name", "V", "M", "TS", "TR", "Ind"]
-    rows = [
-        [
-            str(i + 1),
-            s["name"],
-            str(s["v"]),
-            str(s["m"]),
-            str(s["ts"]),
-            str(s["tr"]),
-            f"{s['ind']:+d}",
-        ]
-        for i, s in enumerate(stats)
-    ]
-    table = make_table(header, rows)
-    return f"**{pool_id} — Results**\n{table}"
-
-
-def format_ranking_table(disc: str, disc_name: str, stats: list[dict]) -> str:
-    """Return a Discord-ready pool-stage overall ranking message."""
-    header = ["#", "Name", "V", "M", "TS", "TR", "Ind"]
-    rows = [
-        [
-            str(i + 1),
-            s["name"],
-            str(s["v"]),
-            str(s["m"]),
-            str(s["ts"]),
-            str(s["tr"]),
-            f"{s['ind']:+d}",
-        ]
-        for i, s in enumerate(stats)
-    ]
-    table = make_table(header, rows)
-    return f"**{disc} ({disc_name}) — Pool Stage Ranking**\n{table}"

@@ -35,8 +35,6 @@ from in_tournament.config import load_in_config, InConfig
 from discord_bot.discord_utils import send_long
 from in_tournament.results_agent.results_agent import (
     compute_pool_stats,
-    format_pool_summary,
-    format_ranking_table,
     parse_pool_image,
 )
 from in_tournament.results_agent.sheet_io import (
@@ -476,6 +474,54 @@ _DISC_COLOUR_DEFAULT = 0x1ABC9C  # aqua
 
 def _disc_colour(disc_code: str) -> int:
     return _DISC_COLOUR_MAP.get(disc_code, _DISC_COLOUR_DEFAULT)
+
+
+def _stats_table(stats: list[dict]) -> str:
+    """Return a monospace code-block table of fencer stats for a Discord embed."""
+    header = ("#", "Name", "V", "TS", "TR", "Ind")
+    rows = [
+        (str(i), s["name"], str(s["v"]),
+         str(s["ts"]), str(s["tr"]), f"{s['ind']:+d}")
+        for i, s in enumerate(stats, 1)
+    ]
+    all_rows = [header] + rows
+    widths = [max(len(r[col]) for r in all_rows) for col in range(6)]
+
+    def _fmt(row: tuple) -> str:
+        return (
+            f"{row[0]:<{widths[0]}}  "
+            f"{row[1]:<{widths[1]}}  "
+            f"{row[2]:>{widths[2]}}  "
+            f"{row[3]:>{widths[3]}}  "
+            f"{row[4]:>{widths[4]}}  "
+            f"{row[5]:>{widths[5]}}"
+        )
+
+    sep = "─" * (sum(widths) + 10)
+    lines = [_fmt(header), sep] + [_fmt(r) for r in rows]
+    return "```\n" + "\n".join(lines) + "\n```"
+
+
+def _bouts_embed(pool_id: str, disc: str, bouts: list[dict]) -> discord.Embed:
+    """Embed listing every bout with the winner's name in bold."""
+    lines: list[str] = []
+    for b in bouts:
+        f1 = str(b.get("Fencer1", ""))
+        f2 = str(b.get("Fencer2", ""))
+        try:
+            s1, s2 = int(b.get("Score1", 0)), int(b.get("Score2", 0))
+        except (TypeError, ValueError):
+            s1, s2 = 0, 0
+        if s1 > s2:
+            lines.append(f"**{f1}** vs {f2} — {s1}:{s2}")
+        elif s2 > s1:
+            lines.append(f"{f1} vs **{f2}** — {s1}:{s2}")
+        else:
+            lines.append(f"{f1} vs {f2} — {s1}:{s2}")
+    return discord.Embed(
+        description="\n".join(lines) or "—",
+        colour=_disc_colour(disc),
+    )
 
 
 async def _wipe_guild_channels(guild: discord.Guild) -> None:
@@ -995,7 +1041,7 @@ class ResultsCog(commands.Cog):
             await asyncio.to_thread(write_pool_bouts, sheet_url, config.creds_path, result)
 
             flag_desc = {
-                "": "✅ clean parse",
+                ".": "✅ clean parse",
                 "?": "⚠ needs human review",
                 "??": "❌ unreadable — please fill in by hand",
             }
@@ -1044,8 +1090,8 @@ class ResultsCog(commands.Cog):
                 log.exception("Sheet read failed for %s", disc)
                 continue
 
-            # Cleared = clean parse (empty confidence) or human-approved (no ? remaining)
-            cleared = [b for b in verified if "?" not in str(b.get("Confidence", ""))]
+            # Cleared = human removed the confidence symbol (cell is empty)
+            cleared = [b for b in verified if str(b.get("Confidence", "")).strip() == ""]
 
             for pool_id, fencers in composition.items():
                 if pool_id in published:
@@ -1086,8 +1132,16 @@ class ResultsCog(commands.Cog):
         if results_ch is None:
             log.warning("No #%s channel in guild %d — cannot publish %s", RESULTS_CHANNEL, guild.id, pool_id)
             return
+        thread = await _get_or_create_thread(results_ch, f"{disc} Pool Results")
         stats = compute_pool_stats(fencers, bouts)
-        await send_long(results_ch, format_pool_summary(pool_id, stats))
+        await thread.send(embeds=[
+            discord.Embed(
+                title=f"{disc} Pool {pool_id.split('-', 1)[1]} Results",
+                description=_stats_table(stats),
+                colour=_disc_colour(disc),
+            ),
+            _bouts_embed(pool_id, disc, bouts),
+        ])
         if ann_ch is not None:
             await ann_ch.send(f"📊 **{pool_id}** results are in — see <#{results_ch.id}>")
 
@@ -1104,8 +1158,13 @@ class ResultsCog(commands.Cog):
             return
         config = self.bot.config
         disc_name = (config.disciplines or {}).get(disc, disc) if config else disc
+        thread = await _get_or_create_thread(results_ch, f"{disc} Pool Results")
         stats = compute_pool_stats(all_fencers, bouts)
-        await send_long(results_ch, format_ranking_table(disc, disc_name, stats))
+        await thread.send(embed=discord.Embed(
+            title=f"{disc} — {disc_name} · Pool Stage Ranking",
+            description=_stats_table(stats),
+            colour=_disc_colour(disc),
+        ))
         if ann_ch is not None:
             await ann_ch.send(f"🏆 **{disc_name}** pool-stage ranking posted — see <#{results_ch.id}>")
 
@@ -1128,6 +1187,72 @@ class ResultsCog(commands.Cog):
         except Exception as e:
             log.exception("refresh failed in guild %d", guild.id)
             await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
+
+    @app_commands.command(
+        name="repub_pool_res",
+        description="Manually publish results for a specific pool from the verified sheet",
+    )
+    @app_commands.describe(disc="Discipline code, e.g. LS", pool_no="Pool number, e.g. 3")
+    @_admin_only()
+    async def repub_pool_res(
+        self, interaction: discord.Interaction, disc: str, pool_no: int
+    ) -> None:
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
+            return
+
+        config = self.bot.config
+        if config is None:
+            await interaction.response.send_message("Bot is not configured yet.", ephemeral=True)
+            return
+
+        disc = disc.strip().upper()
+        sheet_url = config.data_sheet_urls.get(disc)
+        if sheet_url is None:
+            await interaction.response.send_message(
+                f"No data sheet configured for discipline **{disc}**.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        pool_id = f"{disc}-{pool_no}"
+        try:
+            composition = await asyncio.to_thread(
+                get_pool_composition, sheet_url, config.creds_path, disc
+            )
+            verified = await asyncio.to_thread(
+                read_verified_bouts, sheet_url, config.creds_path
+            )
+        except Exception as e:
+            log.exception("republish_pool: sheet read failed for %s", pool_id)
+            await interaction.followup.send(f"❌ Failed to read sheet: {e}", ephemeral=True)
+            return
+
+        fencers = composition.get(pool_id)
+        if fencers is None:
+            await interaction.followup.send(
+                f"❌ Pool **{pool_id}** not found in pool composition.", ephemeral=True
+            )
+            return
+
+        cleared = [
+            b for b in verified
+            if b.get("Pool") == pool_no
+            and str(b.get("Confidence", "")).strip() == ""
+        ]
+
+        await self._publish_pool(guild, disc, pool_id, cleared, fencers)
+
+        data_dir = run_bot_data_dir(self._data_root(), guild.id)
+        published = await asyncio.to_thread(load_published_pools, data_dir)
+        published.add(pool_id)
+        await asyncio.to_thread(save_published_pools, data_dir, published)
+
+        await interaction.followup.send(
+            f"✅ Published **{pool_id}** — {len(cleared)} cleared bout(s).", ephemeral=True
+        )
 
 
 def run() -> None:

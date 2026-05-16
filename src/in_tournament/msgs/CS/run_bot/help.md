@@ -17,6 +17,7 @@ Všechny příkazy vyžadují roli **Admin**.
 **Výsledky**
 Nahrajte fotografie vyplněných výsledkových listů skupin do **#org-results-upload** — bot je zpracuje a zapíše zápasy do Google Sheetu.
 `/refresh` — okamžitě zkontroluje ověřené zápasy a zveřejní dokončené skupiny (jinak probíhá automaticky každých 30 s)
+`/repub_pool_res <disc> <pool_no>` — ručně zveřejní konkrétní skupinu z ověřeného listu (např. `/republish_pool LS 3`)
 
 **Moderování**
 `/clear` — smaže všechny zprávy v tomto kanálu kromě první
