@@ -33,6 +33,7 @@ from shared.config import load_agent_config
 from in_tournament.config import load_in_config, InConfig
 
 from discord_bot.discord_utils import send_long
+from in_tournament.results_agent.calc_pools import calc_and_write_pool_results
 from in_tournament.results_agent.results_agent import (
     compute_pool_stats,
     parse_pool_image,
@@ -964,6 +965,56 @@ class SetupCommandsCog(commands.Cog):
             f"see **{thread_name}** thread in #{ANNOUNCEMENTS_CHANNEL}.",
             ephemeral=True,
         )
+
+    @app_commands.command(
+        name="calc_pools",
+        description="Calculate pool-stage standings and write to Pool Results sheet",
+    )
+    @app_commands.describe(disc="Discipline code, e.g. LS")
+    @_admin_only()
+    @_in_setup()
+    async def calc_pools(self, interaction: discord.Interaction, disc: str) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
+            return
+
+        config = self.bot.config
+        if config is None:
+            await interaction.response.send_message("Bot is not configured yet.", ephemeral=True)
+            return
+
+        disc = disc.strip().upper()
+        sheet_url = config.data_sheet_urls.get(disc)
+        if not sheet_url:
+            await interaction.response.send_message(
+                f"No data sheet configured for discipline **{disc}**.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            rows, warnings = await asyncio.to_thread(
+                calc_and_write_pool_results, sheet_url, config.creds_path, disc
+            )
+        except Exception as e:
+            log.exception("calc_pools failed for %s", disc)
+            await interaction.followup.send(f"❌ {e}", ephemeral=True)
+            return
+
+        if warnings:
+            setup_ch = discord.utils.get(interaction.guild.text_channels, name=SETUP_CHANNEL)
+            if setup_ch is not None:
+                thread = await _get_or_create_thread(setup_ch, f"{disc}_pool_results")
+                header = f"**{disc} Pool Results — Validation ({len(warnings)} issue(s))**"
+                await send_long(thread, header + "\n" + "\n".join(warnings))
+
+        msg = f"✅ **{disc}** — {len(rows)} fencer(s) written to Pool Results sheet."
+        if warnings:
+            msg += f"\n⚠ {len(warnings)} issue(s) — see **{disc}_pool_results** thread in #{SETUP_CHANNEL}."
+        else:
+            msg += " No validation issues."
+        await interaction.followup.send(msg, ephemeral=True)
 
 
 class ResultsCog(commands.Cog):

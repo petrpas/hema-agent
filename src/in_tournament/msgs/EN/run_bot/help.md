@@ -10,6 +10,7 @@ All commands require the **Admin** role.
 `/create_pool_sheets` — create one Google Sheet per discipline
 `/validate_pools [disc]` — check pool sheets against the tournament roster (default: all disciplines)
 `/render_pools [disc]` — render pool tables as PDFs into **<disc>_pool_tables** thread in #setup
+`/calc_pools <disc>` — calculate pool-stage standings from the verified sheet and write to Pool Results sheet; validation issues go to **<disc>_pool_results** thread in #setup
 
 **Publishing** *(#setup or #bot-commands)*
 `/publish_pools <disc>` — publish pool assignments for fencers into **<disc>_pools** thread in #announcements
