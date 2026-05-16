@@ -2,9 +2,6 @@
 
 Independent from `pre_bot.py` (pre-tournament prep). Shares only generic
 helpers in `discord_bot/` and framework utilities in `shared/`.
-
-Slice 1 (this file): bot wiring + GeneralCog (/clear, /sync). The setup
-module, setup-agent cog, and results-loop cog land in later slices.
 """
 
 # Load .env before any other import so env-dependent module-level code
@@ -17,6 +14,7 @@ import io
 import json
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -28,13 +26,26 @@ if str(_SRC_ROOT) not in sys.path:
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 
 from discord_bot.instance_lock import acquire_instance_lock
 from shared.config import load_agent_config
 from in_tournament.config import load_in_config, InConfig
 
 from discord_bot.discord_utils import send_long
+from in_tournament.results_agent.results_agent import (
+    compute_pool_stats,
+    format_pool_summary,
+    format_ranking_table,
+    parse_pool_image,
+)
+from in_tournament.results_agent.sheet_io import (
+    get_pool_composition,
+    load_published_pools,
+    read_verified_bouts,
+    save_published_pools,
+    write_pool_bouts,
+)
 from in_tournament.msgs import read_msg as _read_in_msg
 from in_tournament.render_pools import read_pools_for_disc, render_pools_for_disc, render_pools_list_for_disc
 from in_tournament.run_setup_agent.run_setup_agent import (
@@ -50,6 +61,8 @@ from in_tournament.run_setup_agent.run_setup_agent import (
 from in_tournament.server_layout import (
     ANNOUNCEMENTS_CHANNEL,
     BOT_COMMANDS_CHANNEL,
+    RESULTS_CHANNEL,
+    RESULTS_UPLOAD_CHANNEL,
     ROLE_ADMIN,
     ROLES,
     SETUP_CHANNEL,
@@ -67,6 +80,20 @@ from in_tournament.setup import (
 log = logging.getLogger(__name__)
 
 _HELP_TEXT = _read_in_msg("run_bot/help")
+
+_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+_MEDIA_TYPES = {
+    ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+    ".png": "image/png", ".gif": "image/gif", ".webp": "image/webp",
+}
+
+
+def _is_image(attachment: discord.Attachment) -> bool:
+    return Path(attachment.filename).suffix.lower() in _IMAGE_EXTENSIONS
+
+
+def _guess_media_type(filename: str) -> str:
+    return _MEDIA_TYPES.get(Path(filename).suffix.lower(), "image/jpeg")
 
 
 # ── Access-control helpers ────────────────────────────────────────────────────
@@ -125,7 +152,7 @@ class HemaTournamentRunBot(commands.Bot):
         await self.add_cog(ServerSetupCog(self))
         await self.add_cog(SetupAgentCog(self))
         await self.add_cog(SetupCommandsCog(self))
-        # ResultsCog will be added in the next slice.
+        await self.add_cog(ResultsCog(self))
 
     def _data_root(self) -> Path:
         if self.config is not None:
@@ -604,7 +631,7 @@ class _TournamentConfigModal(discord.ui.Modal, title="Tournament Configuration")
             )
             return
 
-        raw_codes = [c.strip().upper() for c in disc_str.split(",") if c.strip()]
+        raw_codes = [c for c in re.split(r"[^A-Za-z0-9]+", disc_str.upper()) if c]
         if not raw_codes:
             await interaction.response.send_message("No discipline codes provided.", ephemeral=True)
             return
@@ -891,6 +918,216 @@ class SetupCommandsCog(commands.Cog):
             f"see **{thread_name}** thread in #{ANNOUNCEMENTS_CHANNEL}.",
             ephemeral=True,
         )
+
+
+class ResultsCog(commands.Cog):
+    """Watches #org-results-upload for pool-sheet photos and manages the publication loop."""
+
+    def __init__(self, bot: HemaTournamentRunBot) -> None:
+        self.bot = bot
+        self._poll.start()
+
+    def cog_unload(self) -> None:
+        self._poll.cancel()
+
+    def _data_root(self) -> Path:
+        if self.bot.config is not None:
+            return Path(self.bot.config.data_root_dir)
+        return Path(load_agent_config().reg_agent.data_root_dir)
+
+    # ── Image intake ──────────────────────────────────────────────────────────
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message) -> None:
+        if message.author == self.bot.user:
+            return
+        if not isinstance(message.channel, discord.TextChannel):
+            return
+        if message.channel.name != RESULTS_UPLOAD_CHANNEL:
+            return
+        images = [a for a in message.attachments if _is_image(a)]
+        if not images:
+            return
+        for attachment in images:
+            await self._handle_image(message, attachment)
+
+    async def _handle_image(
+        self, message: discord.Message, attachment: discord.Attachment
+    ) -> None:
+        channel = message.channel
+        if not isinstance(channel, discord.TextChannel):
+            return
+        guild = message.guild
+        if guild is None or self.bot.config is None:
+            return
+
+        ack = await channel.send(f"📷 Parsing `{attachment.filename}`…")
+        try:
+            image_bytes = await attachment.read()
+            media_type = _guess_media_type(attachment.filename)
+            config = self.bot.config
+
+            # Gather pool composition across all configured disciplines
+            composition: dict[str, list[str]] = {}
+            for disc, sheet_url in config.data_sheet_urls.items():
+                comp = await asyncio.to_thread(
+                    get_pool_composition, sheet_url, config.creds_path, disc
+                )
+                composition.update(comp)
+
+            if not composition:
+                await ack.edit(content="❌ No pool sheets configured yet — run `/create_pool_sheets` first.")
+                return
+
+            result = await parse_pool_image(
+                image_bytes, media_type, composition,
+                discipline_limits=config.discipline_limits,
+                disciplines=config.disciplines,
+            )
+
+            sheet_url = config.data_sheet_urls.get(result.disc)
+            if sheet_url is None:
+                await ack.edit(
+                    content=f"❌ No data sheet configured for discipline **{result.disc}**."
+                )
+                return
+
+            await asyncio.to_thread(write_pool_bouts, sheet_url, config.creds_path, result)
+
+            flag_desc = {
+                "": "✅ clean parse",
+                "?": "⚠ needs human review",
+                "??": "❌ unreadable — please fill in by hand",
+            }
+            flag = flag_desc.get(result.confidence, result.confidence)
+            report = f"**{result.pool_id}** — {len(result.bouts)} bouts written ({flag})"
+            if result.issues:
+                report += "\n" + "\n".join(f"  • {i}" for i in result.issues)
+
+            await ack.edit(content=report)
+            log.info("Parsed %s: %d bouts, confidence=%s", result.pool_id, len(result.bouts), result.confidence)
+
+        except Exception as e:
+            log.exception("parse_pool_image failed for %s", attachment.filename)
+            await ack.edit(content=f"❌ Failed to parse `{attachment.filename}`: {e}")
+
+    # ── Background polling ────────────────────────────────────────────────────
+
+    @tasks.loop(seconds=30)
+    async def _poll(self) -> None:
+        for guild in self.bot.guilds:
+            try:
+                await self._poll_guild(guild)
+            except Exception:
+                log.exception("Results poll failed for guild %d", guild.id)
+
+    @_poll.before_loop
+    async def _before_poll(self) -> None:
+        await self.bot.wait_until_ready()
+
+    async def _poll_guild(self, guild: discord.Guild) -> None:
+        config = self.bot.config
+        if config is None or not config.data_sheet_urls:
+            return
+
+        data_dir = run_bot_data_dir(self._data_root(), guild.id)
+        published = await asyncio.to_thread(load_published_pools, data_dir)
+        changed = False
+
+        for disc, sheet_url in config.data_sheet_urls.items():
+            creds = config.creds_path
+
+            try:
+                composition = await asyncio.to_thread(get_pool_composition, sheet_url, creds, disc)
+                verified = await asyncio.to_thread(read_verified_bouts, sheet_url, creds)
+            except Exception:
+                log.exception("Sheet read failed for %s", disc)
+                continue
+
+            # Cleared = clean parse (empty confidence) or human-approved (no ? remaining)
+            cleared = [b for b in verified if "?" not in str(b.get("Confidence", ""))]
+
+            for pool_id, fencers in composition.items():
+                if pool_id in published:
+                    continue
+                expected = len(fencers) * (len(fencers) - 1) // 2
+                pool_no = int(pool_id.split("-")[-1])
+                pool_cleared = [b for b in cleared if b.get("Pool") == pool_no]
+                if len(pool_cleared) >= expected:
+                    await self._publish_pool(guild, disc, pool_id, pool_cleared, fencers)
+                    published.add(pool_id)
+                    changed = True
+                    log.info("Published pool %s in guild %d", pool_id, guild.id)
+
+            ranking_key = f"{disc}_ranking"
+            if ranking_key not in published:
+                disc_pool_ids = set(composition.keys())
+                if disc_pool_ids and disc_pool_ids.issubset(published):
+                    all_fencers = [n for names in composition.values() for n in names]
+                    disc_cleared = [b for b in cleared]
+                    await self._publish_ranking(guild, disc, disc_cleared, all_fencers)
+                    published.add(ranking_key)
+                    changed = True
+                    log.info("Published %s ranking in guild %d", disc, guild.id)
+
+        if changed:
+            await asyncio.to_thread(save_published_pools, data_dir, published)
+
+    async def _publish_pool(
+        self,
+        guild: discord.Guild,
+        disc: str,
+        pool_id: str,
+        bouts: list[dict],
+        fencers: list[str],
+    ) -> None:
+        results_ch = discord.utils.get(guild.text_channels, name=RESULTS_CHANNEL)
+        ann_ch = discord.utils.get(guild.text_channels, name=ANNOUNCEMENTS_CHANNEL)
+        if results_ch is None:
+            log.warning("No #%s channel in guild %d — cannot publish %s", RESULTS_CHANNEL, guild.id, pool_id)
+            return
+        stats = compute_pool_stats(fencers, bouts)
+        await send_long(results_ch, format_pool_summary(pool_id, stats))
+        if ann_ch is not None:
+            await ann_ch.send(f"📊 **{pool_id}** results are in — see <#{results_ch.id}>")
+
+    async def _publish_ranking(
+        self,
+        guild: discord.Guild,
+        disc: str,
+        bouts: list[dict],
+        all_fencers: list[str],
+    ) -> None:
+        results_ch = discord.utils.get(guild.text_channels, name=RESULTS_CHANNEL)
+        ann_ch = discord.utils.get(guild.text_channels, name=ANNOUNCEMENTS_CHANNEL)
+        if results_ch is None:
+            return
+        config = self.bot.config
+        disc_name = (config.disciplines or {}).get(disc, disc) if config else disc
+        stats = compute_pool_stats(all_fencers, bouts)
+        await send_long(results_ch, format_ranking_table(disc, disc_name, stats))
+        if ann_ch is not None:
+            await ann_ch.send(f"🏆 **{disc_name}** pool-stage ranking posted — see <#{results_ch.id}>")
+
+    # ── Slash commands ────────────────────────────────────────────────────────
+
+    @app_commands.command(
+        name="refresh",
+        description="Check verified sheets now and publish any newly-complete pools",
+    )
+    @_admin_only()
+    async def refresh(self, interaction: discord.Interaction) -> None:
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        try:
+            await self._poll_guild(guild)
+            await interaction.followup.send("✅ Checked verified sheets.", ephemeral=True)
+        except Exception as e:
+            log.exception("refresh failed in guild %d", guild.id)
+            await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
 
 
 def run() -> None:
