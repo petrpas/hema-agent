@@ -47,6 +47,7 @@ from in_tournament.results_agent.sheet_io import (
 )
 from in_tournament.msgs import read_msg as _read_in_msg
 from in_tournament.render_declaration import load_fencer_names_from_sheets, render_declaration_pdf
+from in_tournament.render_elim import render_elim_bracket
 from in_tournament.render_pools import (
     read_pools_for_disc,
     render_pool_results_for_disc,
@@ -1166,6 +1167,82 @@ class SetupCommandsCog(commands.Cog):
             f"✅ Declaration PDF ({len(names)} fencers) posted to #{SETUP_CHANNEL}.",
             ephemeral=True,
         )
+
+    @app_commands.command(
+        name="render_elim",
+        description="Render elimination bracket PDF+PNG from pool results and post to #setup and #results",
+    )
+    @app_commands.describe(
+        disc="Discipline code, e.g. LS",
+        size="Bracket size: 32 or 64 (auto-detected if omitted)",
+    )
+    @_admin_only()
+    @_in_setup()
+    async def render_elim(
+        self, interaction: discord.Interaction, disc: str, size: int = 0
+    ) -> None:
+        if interaction.guild is None:
+            await interaction.response.send_message("Must be used inside a server.", ephemeral=True)
+            return
+
+        config = self.bot.config
+        if config is None:
+            await interaction.response.send_message("Bot is not configured yet.", ephemeral=True)
+            return
+
+        disc = disc.strip().upper()
+        sheet_url = config.data_sheet_urls.get(disc)
+        if not sheet_url:
+            await interaction.response.send_message(
+                f"No data sheet configured for discipline **{disc}**.", ephemeral=True
+            )
+            return
+
+        await interaction.response.defer(ephemeral=True)
+
+        tournament = config.tournament_display_name or config.tournament_name
+        discipline = (config.disciplines or {}).get(disc, disc)
+
+        try:
+            (pdf_name, pdf_bytes), (png_name, png_bytes) = await asyncio.to_thread(
+                render_elim_bracket,
+                disc, sheet_url, config.creds_path, tournament, discipline,
+                size if size > 0 else None,
+            )
+        except ValueError as e:
+            await interaction.followup.send(f"❌ {e}", ephemeral=True)
+            return
+        except Exception as e:
+            log.exception("render_elim failed for %s", disc)
+            await interaction.followup.send(f"❌ Unexpected error: {e}", ephemeral=True)
+            return
+
+        setup_ch = discord.utils.get(interaction.guild.text_channels, name=SETUP_CHANNEL)
+        if setup_ch is None:
+            await interaction.followup.send("❌ #setup channel not found.", ephemeral=True)
+            return
+
+        setup_thread = await _get_or_create_thread(setup_ch, f"{disc} Elimination Bracket")
+        await setup_thread.send(
+            f"**{disc}** — Elimination Bracket",
+            files=[
+                discord.File(io.BytesIO(png_bytes), filename=png_name),
+                discord.File(io.BytesIO(pdf_bytes), filename=pdf_name),
+            ],
+        )
+
+        results_ch = discord.utils.get(interaction.guild.text_channels, name=RESULTS_CHANNEL)
+        if results_ch is not None:
+            results_thread = await _get_or_create_thread(results_ch, f"{disc} Elimination Bracket")
+            await results_thread.send(
+                f"**{disc}** — Elimination Bracket",
+                file=discord.File(io.BytesIO(png_bytes), filename=png_name),
+            )
+
+        posted = f"**{disc} Elimination Bracket** in #{SETUP_CHANNEL}"
+        if results_ch is not None:
+            posted += f" and #{RESULTS_CHANNEL}"
+        await interaction.followup.send(f"✅ {posted}.", ephemeral=True)
 
 
 class ResultsCog(commands.Cog):
