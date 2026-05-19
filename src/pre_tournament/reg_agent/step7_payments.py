@@ -69,6 +69,24 @@ class PaymentsResult(BaseModel):
     unmatched_fencers: list[str] = []
 
 
+def build_fencer_summaries(fencers: list) -> list[dict]:
+    """Compact per-fencer dicts used as the matcher's fencer roster.
+
+    Shared by the payment agent and the CLI so both feed match_payments()
+    identically shaped input.
+    """
+    return [
+        {
+            "name": f.name,
+            "club": f.club or "unknown",
+            "disciplines": ", ".join(d.str() for d in f.disciplines),
+            "afterparty": f.after_party or "unknown",
+            "borrow": ", ".join(str(w) for w in f.borrow) if f.borrow else "none",
+        }
+        for f in fencers
+    ]
+
+
 def parse_amount(amount_str: str) -> float:
     """Strip currency and convert to float. Handles both European (600,05) and English (600.05) formats."""
     digits = re.sub(r"[^\d.,]", "", amount_str)

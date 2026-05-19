@@ -30,9 +30,13 @@ class NoIdDuplicateGroups(BaseModel):
 
 
 def merge_group(records: list[FencerRecord], config: PreConfig, hint: str | None = None) -> FencerMergeResult:
+    # pydantic-ai defaults Anthropic max_tokens to 4096. Output here is a
+    # single merged record so the floor dominates, but scale + floor it the
+    # same way as step3 so a record with long fields can't truncate.
+    max_tokens = max(8192, 250 * len(records))
     agent = Agent(
         model=config.model(Step.DEDUP),
-        model_settings=ModelSettings(temperature=0.0),
+        model_settings=ModelSettings(temperature=0.0, max_tokens=max_tokens),
         output_type=FencerMergeResult,
         system_prompt=render_msg("reg/step4_system_prompt", {"language": config.language}),
         retries=3,
@@ -55,9 +59,13 @@ def find_no_id_duplicates_llm(
     if not fencers:
         return NoIdDuplicateGroups(surely=[], likely=[], possible=[])
 
+    # NoIdDuplicateGroups lists every no-ID fencer across surely/likely/
+    # possible groups, so output scales with the field size — the same
+    # overflow step3 hit. Scale the cap with it, generously, with a floor.
+    max_tokens = max(8192, 250 * len(fencers))
     agent = Agent(
         model=config.model(Step.DEDUP),
-        model_settings=ModelSettings(temperature=0.0),
+        model_settings=ModelSettings(temperature=0.0, max_tokens=max_tokens),
         output_type=NoIdDuplicateGroups,
         system_prompt=render_msg("reg/step4_no_id_dup_system_prompt", {"language": config.language}),
         retries=3,
@@ -265,3 +273,75 @@ def _dedup_table_text(inputs: list[FencerRecord], merged: FencerRecord, note: st
 def _dedup_likely_table_text(group: list[FencerRecord]) -> str:
     labels = [f"record {i + 1}" for i in range(len(group))]
     return _transposed_dedup_table_text(group, labels)
+
+
+# ---------------------------------------------------------------------------
+# Shared logic extracted from reg_agent.py so the bot and the CLI use one impl.
+# ---------------------------------------------------------------------------
+
+
+def apply_confirmed_merges(
+    data_dir,
+    config: PreConfig,
+    approvals: dict[str, str | None],
+) -> dict:
+    """Apply organiser-confirmed likely-duplicate merges.
+
+    approvals: {group_num_str: merge_hint|None} — only the listed groups from
+    fencers_likely_groups_pending.json are merged. Rewrites
+    fencers_deduped.json (first group member replaced by the merged record,
+    the rest dropped) and deletes the pending file once at least one group
+    was merged.
+
+    Returns {"merged": [pair_str, ...], "count": int, "error": str | None}.
+    """
+    import json as _json
+
+    groups_path = data_dir / FENCERS_LIKELY_GROUPS_PENDING_FILE
+    if not groups_path.exists():
+        return {"merged": [], "count": 0,
+                "error": "No pending likely groups file found — nothing to merge."}
+
+    groups_data: dict[str, list[dict]] = _json.loads(groups_path.read_text())
+
+    fencers = load_fencers_list(data_dir, FENCERS_DEDUPED_FILE)
+    if fencers is None:
+        return {"merged": [], "count": 0, "error": "No deduplicated fencers found."}
+
+    confirmed_groups: list[list[FencerRecord]] = []
+    confirmed_hints: list[str | None] = []
+    for group_num_str, records_data in groups_data.items():
+        if group_num_str not in approvals:
+            continue
+        confirmed_groups.append([FencerRecord(**r) for r in records_data])
+        confirmed_hints.append(approvals[group_num_str])
+
+    if not confirmed_groups:
+        return {"merged": [], "count": 0, "error": None}
+
+    merge_results: list[FencerRecord] = []
+    merged_name_pairs: list[str] = []
+    group_name_sets: list[set[str]] = []
+    for group, hint in zip(confirmed_groups, confirmed_hints, strict=False):
+        merge_result = merge_group(group, config, hint)
+        merge_results.append(merge_result.fencer)
+        merged_name_pairs.append(" + ".join(f.name for f in group))
+        group_name_sets.append({f.name for f in group})
+
+    new_fencers: list[FencerRecord] = []
+    first_placed: set[int] = set()
+    for fencer in fencers:
+        placed = False
+        for i, names_set in enumerate(group_name_sets):
+            if fencer.name in names_set:
+                if i not in first_placed:
+                    new_fencers.append(merge_results[i])
+                    first_placed.add(i)
+                placed = True
+                break
+        if not placed:
+            new_fencers.append(fencer)
+
+    save_fencers_list(new_fencers, data_dir / FENCERS_DEDUPED_FILE)
+    groups_path.unlink(missing_ok=True)
+    return {"merged": merged_name_pairs, "count": len(confirmed_groups), "error": None}

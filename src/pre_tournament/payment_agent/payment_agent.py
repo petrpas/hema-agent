@@ -22,6 +22,7 @@ from pre_tournament.msgs import read_msg, render_msg
 from step7_payments import (
     PAYMENTS_MATCHED_FILE,
     PaymentsResult,
+    build_fencer_summaries,
     format_payments_report,
     load_all_parsed,
     match_payments,
@@ -112,16 +113,7 @@ async def tool_match_payments(
     if fencers is None:
         return "No fencer data found — the registration pipeline must complete through step 4 first."
 
-    fencer_summaries = [
-        {
-            "name": f.name,
-            "club": f.club or "unknown",
-            "disciplines": ", ".join(d.str() for d in f.disciplines),
-            "afterparty": f.after_party or "unknown",
-            "borrow": ", ".join(str(w) for w in f.borrow) if f.borrow else "none",
-        }
-        for f in fencers
-    ]
+    fencer_summaries = build_fencer_summaries(fencers)
 
     # Combine persistent hints from memory with ad-hoc hints argument
     memory_hints = [

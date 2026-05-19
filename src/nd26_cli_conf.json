@@ -1,0 +1,14 @@
+{
+  "tournament_name": "Na Duel! 2026",
+  "language": "EN",
+  "disciplines": {
+    "SA": "sabre",
+    "SB": "sword and buckler"
+  },
+  "discipline_limits": {
+    "SA": 49,
+    "SB": 35
+  },
+  "registration_sheet_url": "https://docs.google.com/spreadsheets/d/1YWwXqEbYiApTLKYB3xKBnoLtBJIQYQgO6yMowrhCNxk/edit?usp=sharing",
+  "output_sheet_url": "https://docs.google.com/spreadsheets/d/1mWUrVzlWzNtLo3X3bt8FwTzQbo38Vq_iXGwDZFGxWP8/edit"
+}

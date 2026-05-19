@@ -16,7 +16,10 @@ logger = logging.getLogger(__name__)
 
 from pre_tournament.config import PreConfig, Step
 from models import FencerRecord
-from utils import load_fencers_list, save_fencers_list, to_nat_code, FENCERS_MATCHED_FILE, FENCERS_CACHE_FILE
+from utils import (
+    load_fencers_list, save_fencers_list, to_nat_code, normalize_name,
+    FENCERS_MATCHED_FILE, FENCERS_CACHE_FILE, FENCERS_DEDUPED_FILE,
+)
 
 FIGHTERS_URL = "https://hemaratings.com/fighters/"
 FIGHTERS_CACHE_FILENAME = "hemaratings_fighters.html"
@@ -227,9 +230,15 @@ def _call_llm(
         f"- name={f.name}, club={f.club or ''}"
         for f in need_llm
     )
+    # MatchResult holds one object per unmatched fencer (~80 tokens each).
+    # pydantic-ai defaults Anthropic max_tokens to 4096, which truncates the
+    # tool-call JSON once ~40+ fencers need matching (a form with no HR-ID
+    # column → every fencer) and the step then fails after 3 retries.
+    # Scale the cap with the batch size, generously, with a high floor.
+    max_tokens = max(8192, 250 * len(need_llm))
     agent = Agent(
         model=config.model(Step.MATCH),
-        model_settings=ModelSettings(temperature=0.0),
+        model_settings=ModelSettings(temperature=0.0, max_tokens=max_tokens),
         output_type=MatchResult,
         system_prompt=SYSTEM_PROMPT,
         retries=3,
@@ -672,3 +681,167 @@ def _match_table_chunks(
         chunks.append(chunk_header + "\n".join(body_lines) + "\n" + chunk_footer)
 
     return chunks
+
+
+# ---------------------------------------------------------------------------
+# Shared logic extracted from reg_agent.py so the bot and the CLI use one impl.
+# ---------------------------------------------------------------------------
+
+
+def search_profiles(data_dir: Path, name: str) -> str:
+    """Fuzzy-search the local HEMA Ratings fighters list for a name.
+
+    Diacritic-insensitive; returns up to 10 closest matches, one per line as
+    `hr_id=N  Name  [NAT]  Club`, or a "No profiles found" message.
+    The fighters list must have been downloaded during step 3.
+    """
+    try:
+        fighters_text = _get_fighters_compact(data_dir)
+    except Exception as e:
+        return f"error loading fighters list: {e}"
+
+    index: list[tuple[str, str]] = []  # (normalized_name, original_line)
+    for line in fighters_text.splitlines():
+        parts = line.split(";", 3)
+        if len(parts) >= 2:
+            index.append((_normalize(parts[1]), line))
+
+    query = _normalize(name)
+    all_norms = [item[0] for item in index]
+    close = difflib.get_close_matches(query, all_norms, n=10, cutoff=0.5)
+
+    tokens = query.split()
+    if tokens:
+        surname = tokens[-1]
+        close_set = set(close)
+        for norm, _line in index:
+            if surname in norm and norm not in close_set:
+                close.append(norm)
+                if len(close) >= 10:
+                    break
+
+    if not close:
+        return f"No profiles found matching '{name}'."
+
+    results = []
+    seen: set[str] = set()
+    for norm_name in close[:10]:
+        for n, line in index:
+            if n == norm_name and line not in seen:
+                seen.add(line)
+                parts = line.split(";", 3)
+                hr_id, hr_name = parts[0], parts[1]
+                nat = parts[2] if len(parts) > 2 else ""
+                club = parts[3] if len(parts) > 3 else ""
+                results.append(f"hr_id={hr_id}  {hr_name}  [{nat}]  {club}")
+                break
+
+    return "\n".join(results)
+
+
+def apply_correction(
+    data_dir: Path,
+    fencer_name: str,
+    correct_hr_id: int | None,
+) -> str:
+    """Fix a wrong step-3 match in fencers_matched.json and persist it.
+
+    Patches fencers_matched.json, fencers_cache.json, match_corrections.json,
+    and fencers_deduped.json (if present) so reruns and step 6 stay correct.
+    Returns a summary string. Success summaries start with "Corrected:";
+    "No change needed" / "not found" messages are returned verbatim.
+    """
+    fencers = load_fencers_list(data_dir, FENCERS_MATCHED_FILE)
+    if fencers is None:
+        return "No matched fencers file — run step 3 (match) first."
+
+    cache_path = data_dir / FENCERS_CACHE_FILE
+    cache = _load_cache(cache_path)
+    corrections = load_corrections(data_dir)
+    fighters_text = _get_fighters_compact(data_dir)
+    hr_index = _build_hr_index(fighters_text)
+
+    target_idx: int | None = None
+    for i, f in enumerate(fencers):
+        if f.name == fencer_name or (f.reg_name and f.reg_name == fencer_name):
+            target_idx = i
+            break
+    if target_idx is None:
+        fencer_name_lower = fencer_name.lower()
+        for i, f in enumerate(fencers):
+            if f.name.lower() == fencer_name_lower or (f.reg_name and f.reg_name.lower() == fencer_name_lower):
+                target_idx = i
+                break
+    if target_idx is None:
+        return f"Fencer '{fencer_name}' not found in matched fencers."
+
+    fencer = fencers[target_idx]
+    old_hr_id = fencer.hr_id
+
+    if old_hr_id == correct_hr_id:
+        return f"No change needed: {fencer_name} already has hr_id={correct_hr_id}."
+
+    if old_hr_id is not None:
+        old_key = str(old_hr_id)
+        if old_key in cache:
+            entry = cache[old_key]
+            name_lower = fencer.name.lower()
+            entry.alternative_names_used = [
+                n for n in entry.alternative_names_used if n.lower() != name_lower
+            ]
+            if fencer.email:
+                correct_key = str(correct_hr_id) if correct_hr_id is not None else None
+                email_in_correct = (
+                    correct_key is not None
+                    and correct_key in cache
+                    and fencer.email.lower() in {e.lower() for e in cache[correct_key].emails_used}
+                )
+                if not email_in_correct:
+                    entry.emails_used = [
+                        e for e in entry.emails_used if e.lower() != fencer.email.lower()
+                    ]
+
+    update: dict = {"hr_id": correct_hr_id}
+    if correct_hr_id is not None:
+        hr_name, hr_nat, hr_club = hr_index.get(correct_hr_id, (None, None, None))
+        if hr_name:
+            orig_name = fencer.reg_name or fencer.name
+            if _normalize(orig_name) != _normalize(hr_name):
+                update["name"] = hr_name
+                update["reg_name"] = orig_name
+            else:
+                update["name"] = hr_name
+        if hr_nat:
+            update["nationality"] = hr_nat
+        _upsert_cache_entry(
+            cache, correct_hr_id,
+            hr_name or fencer.name, hr_club or fencer.club or "",
+            hr_nat or fencer.nationality or None,
+            fencer.name if hr_name and _normalize(fencer.name) != _normalize(hr_name) else None,
+        )
+    else:
+        if fencer.reg_name:
+            update["name"] = fencer.reg_name
+            update["reg_name"] = None
+    fencers[target_idx] = fencer.model_copy(update=update)
+
+    corrections[fencer_name] = correct_hr_id
+    if fencer.reg_name and fencer.reg_name.lower() != fencer.name.lower():
+        corrections[fencer.reg_name] = correct_hr_id
+
+    save_fencers_list(fencers, data_dir / FENCERS_MATCHED_FILE)
+    _save_cache(cache, cache_path)
+    save_corrections(corrections, data_dir)
+
+    deduped = load_fencers_list(data_dir, FENCERS_DEDUPED_FILE)
+    if deduped is not None:
+        corrected_name_lower = normalize_name(fencer_name)
+        for i, f in enumerate(deduped):
+            if normalize_name(f.name) == corrected_name_lower or (f.reg_name and normalize_name(f.reg_name) == corrected_name_lower):
+                deduped[i] = f.model_copy(update=update)
+                break
+        save_fencers_list(deduped, data_dir / FENCERS_DEDUPED_FILE)
+
+    old_str = "no profile" if old_hr_id is None else f"hr_id={old_hr_id}"
+    new_str = "no profile" if correct_hr_id is None else f"hr_id={correct_hr_id}"
+    return f"Corrected: {fencer_name} → {new_str} (was {old_str})"

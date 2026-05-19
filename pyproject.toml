@@ -51,4 +51,4 @@ ignore = [
 ]
 
 [project.scripts]
-reg-agent = "pre_tournament.reg_agent.main:main"
+hema-cli = "pre_tournament.cli.app:main"

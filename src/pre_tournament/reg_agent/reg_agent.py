@@ -41,11 +41,8 @@ from step1_download import download_registrations
 from step2_parse import parse_registrations
 from step3_match import (
     match_fencers,
-    load_corrections,
-    save_corrections,
-    _load_cache,
-    _save_cache,
-    _upsert_cache_entry,
+    apply_correction,
+    search_profiles,
     _normalize,
     _build_hr_index,
     _get_fighters_compact,
@@ -56,7 +53,7 @@ from step3_match import (
 )
 from step4_dedup import (
     deduplicate_fencers,
-    merge_group,
+    apply_confirmed_merges,
     FENCERS_LIKELY_GROUPS_PENDING_FILE,
     _dedup_table_text,
     _dedup_likely_table_text,
@@ -79,7 +76,6 @@ from utils import (
     REG_VER_FILE_REG,
     FENCERS_PARSED_FILE,
     FENCERS_MATCHED_FILE,
-    FENCERS_CACHE_FILE,
     FENCERS_DEDUPED_FILE,
 )
 
@@ -553,50 +549,7 @@ def tool_search_hr_profile(ctx: RunContext[AgentDeps], name: str) -> str:
     Returns up to 10 closest matches with hr_id, name, nationality, and club.
     The fighters list must have been downloaded during step 3.
     """
-    import difflib as _difflib
-    try:
-        fighters_text = _get_fighters_compact(ctx.deps.config.data_dir)
-    except Exception as e:
-        return f"error loading fighters list: {e}"
-
-    index: list[tuple[str, str]] = []  # (normalized_name, original_line)
-    for line in fighters_text.splitlines():
-        parts = line.split(";", 3)
-        if len(parts) >= 2:
-            index.append((_normalize(parts[1]), line))
-
-    query = _normalize(name)
-    all_norms = [item[0] for item in index]
-    close = _difflib.get_close_matches(query, all_norms, n=10, cutoff=0.5)
-
-    # Also include any line where the last token of the query appears in the name
-    tokens = query.split()
-    if tokens:
-        surname = tokens[-1]
-        close_set = set(close)
-        for norm, line in index:
-            if surname in norm and norm not in close_set:
-                close.append(norm)
-                if len(close) >= 10:
-                    break
-
-    if not close:
-        return f"No profiles found matching '{name}'."
-
-    results = []
-    seen: set[str] = set()
-    for norm_name in close[:10]:
-        for n, line in index:
-            if n == norm_name and line not in seen:
-                seen.add(line)
-                parts = line.split(";", 3)
-                hr_id, hr_name = parts[0], parts[1]
-                nat = parts[2] if len(parts) > 2 else ""
-                club = parts[3] if len(parts) > 3 else ""
-                results.append(f"hr_id={hr_id}  {hr_name}  [{nat}]  {club}")
-                break
-
-    return "\n".join(results)
+    return search_profiles(ctx.deps.config.data_dir, name)
 
 
 @registration_agent.tool
@@ -610,108 +563,11 @@ async def tool_correct_match(
     fencer_name: registered name exactly as it appears in the matched fencers list.
     correct_hr_id: the correct HEMA Ratings ID, or null if the fencer has no profile.
     """
-    data_dir = ctx.deps.config.data_dir
-    fencers = load_fencers_list(data_dir, FENCERS_MATCHED_FILE)
-    if fencers is None:
-        return "No matched fencers file — run tool_match_fencers first."
-
-    cache_path = data_dir / FENCERS_CACHE_FILE
-    cache = _load_cache(cache_path)
-    corrections = load_corrections(data_dir)
-    fighters_text = _get_fighters_compact(data_dir)
-    hr_index = _build_hr_index(fighters_text)
-
-    # Find fencer by name (or reg_name) — exact match first, then case-insensitive
-    target_idx: int | None = None
-    for i, f in enumerate(fencers):
-        if f.name == fencer_name or (f.reg_name and f.reg_name == fencer_name):
-            target_idx = i
-            break
-    if target_idx is None:
-        fencer_name_lower = fencer_name.lower()
-        for i, f in enumerate(fencers):
-            if f.name.lower() == fencer_name_lower or (f.reg_name and f.reg_name.lower() == fencer_name_lower):
-                target_idx = i
-                break
-    if target_idx is None:
-        return f"Fencer '{fencer_name}' not found in matched fencers."
-
-    fencer = fencers[target_idx]
-    old_hr_id = fencer.hr_id
-
-    if old_hr_id == correct_hr_id:
-        return f"No change needed: {fencer_name} already has hr_id={correct_hr_id}."
-
-    # Clean up old cache entry
-    if old_hr_id is not None:
-        old_key = str(old_hr_id)
-        if old_key in cache:
-            entry = cache[old_key]
-            name_lower = fencer.name.lower()
-            entry.alternative_names_used = [
-                n for n in entry.alternative_names_used if n.lower() != name_lower
-            ]
-            if fencer.email:
-                correct_key = str(correct_hr_id) if correct_hr_id is not None else None
-                email_in_correct = (
-                    correct_key is not None
-                    and correct_key in cache
-                    and fencer.email.lower() in {e.lower() for e in cache[correct_key].emails_used}
-                )
-                if not email_in_correct:
-                    entry.emails_used = [
-                        e for e in entry.emails_used if e.lower() != fencer.email.lower()
-                    ]
-
-    # Apply correction — also update name from HR index
-    update: dict = {"hr_id": correct_hr_id}
-    if correct_hr_id is not None:
-        hr_name, hr_nat, hr_club = hr_index.get(correct_hr_id, (None, None, None))
-        if hr_name:
-            orig_name = fencer.reg_name or fencer.name
-            if _normalize(orig_name) != _normalize(hr_name):
-                update["name"] = hr_name
-                update["reg_name"] = orig_name
-            else:
-                update["name"] = hr_name
-        if hr_nat:
-            update["nationality"] = hr_nat
-        _upsert_cache_entry(
-            cache, correct_hr_id,
-            hr_name or fencer.name, hr_club or fencer.club or "",
-            hr_nat or fencer.nationality or None,
-            fencer.name if hr_name and _normalize(fencer.name) != _normalize(hr_name) else None,
-        )
-    else:
-        # Correction to None — revert to registration name
-        if fencer.reg_name:
-            update["name"] = fencer.reg_name
-            update["reg_name"] = None
-    fencers[target_idx] = fencer.model_copy(update=update)
-
-    # Persist correction under both names so reruns find it regardless of name form
-    corrections[fencer_name] = correct_hr_id
-    if fencer.reg_name and fencer.reg_name.lower() != fencer.name.lower():
-        corrections[fencer.reg_name] = correct_hr_id
-
-    save_fencers_list(fencers, data_dir / FENCERS_MATCHED_FILE)
-    _save_cache(cache, cache_path)
-    save_corrections(corrections, data_dir)
-
-    # Also patch fencers_deduped.json so upload_results sees the corrected hr_id immediately.
-    deduped = load_fencers_list(data_dir, FENCERS_DEDUPED_FILE)
-    if deduped is not None:
-        corrected_name_lower = normalize_name(fencer_name)
-        for i, f in enumerate(deduped):
-            if normalize_name(f.name) == corrected_name_lower or (f.reg_name and normalize_name(f.reg_name) == corrected_name_lower):
-                deduped[i] = f.model_copy(update=update)
-                break
-        save_fencers_list(deduped, data_dir / FENCERS_DEDUPED_FILE)
-
-    old_str = "no profile" if old_hr_id is None else f"hr_id={old_hr_id}"
-    new_str = "no profile" if correct_hr_id is None else f"hr_id={correct_hr_id}"
-    summary = f"Corrected: {fencer_name} → {new_str} (was {old_str})"
-    await _post_to_thread(ctx.deps, "step3-correct", summary)
+    summary = await asyncio.to_thread(
+        apply_correction, ctx.deps.config.data_dir, fencer_name, correct_hr_id
+    )
+    if summary.startswith("Corrected:"):
+        await _post_to_thread(ctx.deps, "step3-correct", summary)
     return summary
 
 
@@ -822,19 +678,14 @@ async def tool_merge_confirmed_duplicates(ctx: RunContext[AgentDeps]) -> str:
 
     groups_data: dict[str, list[dict]] = _json.loads(groups_path.read_text())
 
-    fencers = load_fencers_list(ctx.deps.config.data_dir, FENCERS_DEDUPED_FILE)
-    if fencers is None:
-        return "No deduplicated fencers found."
-
     if ctx.deps.thread is None:
         return "No pipeline thread found."
 
-    # Check each group for ✅ reactions
-    confirmed_groups: list[list[FencerRecord]] = []
-    confirmed_hints: list[str | None] = []
+    # Read ✅ reactions + optional reply hints → approvals {group_num: hint|None}
+    approvals: dict[str, str | None] = {}
     skipped = 0
 
-    for group_num_str, records_data in groups_data.items():
+    for group_num_str in groups_data:
         tag = f"dedup-likely-{group_num_str}"
         msg_id = ctx.deps.thread_index.get(tag)
         if msg_id is None:
@@ -848,7 +699,6 @@ async def tool_merge_confirmed_duplicates(ctx: RunContext[AgentDeps]) -> str:
             skipped += 1
             continue
 
-        # Check for ✅ from any non-bot user
         confirmed_reaction = False
         for r in msg.reactions:
             if str(r.emoji) == "✅":
@@ -863,60 +713,34 @@ async def tool_merge_confirmed_duplicates(ctx: RunContext[AgentDeps]) -> str:
             skipped += 1
             continue
 
-        # Look for a thread reply on this message as a merge hint
         hint: str | None = None
         async for reply in ctx.deps.thread.history(limit=50):
             if reply.reference and reply.reference.message_id == msg_id and not reply.author.bot:
                 hint = reply.content
                 break
 
-        group = [FencerRecord(**r) for r in records_data]
-        confirmed_groups.append(group)
-        confirmed_hints.append(hint)
+        approvals[group_num_str] = hint
 
-    if not confirmed_groups:
+    if not approvals:
         return f"No groups confirmed — {skipped} group{'s' if skipped != 1 else ''} skipped (no ✅)."
 
-    # Merge each confirmed group
-    merge_results: list[FencerRecord] = []
-    merged_name_pairs: list[str] = []
-    group_name_sets: list[set[str]] = []
+    res = await asyncio.to_thread(
+        apply_confirmed_merges, ctx.deps.config.data_dir, ctx.deps.config, approvals
+    )
+    if res["error"]:
+        return res["error"]
 
-    for group, hint in zip(confirmed_groups, confirmed_hints, strict=False):
-        merge_result = await asyncio.to_thread(merge_group, group, ctx.deps.config, hint)
-        merge_results.append(merge_result.fencer)
-        merged_name_pairs.append(" + ".join(f.name for f in group))
-        group_name_sets.append({f.name for f in group})
-
-    # Update fencers list: replace each group's first member with the merged record, skip the rest
-    new_fencers: list[FencerRecord] = []
-    first_placed: set[int] = set()  # indices into confirmed_groups already emitted
-
-    for fencer in fencers:
-        placed = False
-        for i, names_set in enumerate(group_name_sets):
-            if fencer.name in names_set:
-                if i not in first_placed:
-                    new_fencers.append(merge_results[i])
-                    first_placed.add(i)
-                # else: subsequent member of this group — skip
-                placed = True
-                break
-        if not placed:
-            new_fencers.append(fencer)
-
-    save_fencers_list(new_fencers, ctx.deps.config.data_dir / FENCERS_DEDUPED_FILE)
-    groups_path.unlink(missing_ok=True)
-
+    merged_name_pairs = res["merged"]
+    count = res["count"]
     names_str = ", ".join(f"[{n}]" for n in merged_name_pairs)
     summary = (
-        f"✅ Confirmed merge{'s' if len(confirmed_groups) != 1 else ''} applied: {names_str}. "
+        f"✅ Confirmed merge{'s' if count != 1 else ''} applied: {names_str}. "
         f"{skipped} group{'s' if skipped != 1 else ''} skipped."
     )
     await ctx.deps.channel.send(summary)
 
     return (
-        f"Applied {len(confirmed_groups)} confirmed merge{'s' if len(confirmed_groups) != 1 else ''}: "
+        f"Applied {count} confirmed merge{'s' if count != 1 else ''}: "
         f"{', '.join(merged_name_pairs)}. {skipped} skipped."
     )
 

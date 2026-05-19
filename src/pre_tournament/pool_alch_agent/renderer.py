@@ -11,7 +11,7 @@ from pre_tournament.pool_alch_agent.models import Assignment
 
 log = logging.getLogger(__name__)
 
-_TYPST_DIR = Path(__file__).parent.parent / "typst"
+_TYPST_DIR = Path(__file__).resolve().parents[2] / "shared" / "typst"
 _FONTS_DIR = _TYPST_DIR / "fonts"
 _TEMPLATE = _TYPST_DIR / "templates" / "pools_seed.typ"
 _POOLS_SUBDIR = "lists"

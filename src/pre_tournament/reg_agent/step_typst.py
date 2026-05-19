@@ -19,7 +19,7 @@ import typst
 
 log = logging.getLogger(__name__)
 
-_TYPST_DIR = Path(__file__).parent.parent / "typst"   # src/typst/
+_TYPST_DIR = Path(__file__).resolve().parents[2] / "shared" / "typst"  # src/shared/typst/
 _TEMPLATES_DIR = _TYPST_DIR / "templates"
 _FONTS_DIR = _TYPST_DIR / "fonts"
 _LISTS_SUBDIR = "lists"

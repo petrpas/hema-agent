@@ -26,6 +26,11 @@ It helps the HEMA Tournament organiser with various administrative tasks
 
 See the **[reg-agent](src/pre_tournament/reg_agent/README.md)** docs
 
+## Local CLI (no Discord)
+
+Run any pre-tournament step in isolation and evaluate it against goldens:
+**[`pre_tournament.cli`](src/pre_tournament/cli/README.md)** (`hema-cli`).
+
 ## Deployment
 
 See [`deploy/README.md`](deploy/README.md) for instructions on spinning up a bot instance for a new tournament.
