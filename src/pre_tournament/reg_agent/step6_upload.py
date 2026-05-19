@@ -11,7 +11,14 @@ from pydantic_ai import Agent, RunContext
 from pydantic_ai.models.anthropic import AnthropicModelSettings
 
 from pre_tournament.config import PreConfig, Step
-from models import FencerRating, FencerRecord
+from models import (
+    FencerRating,
+    FencerRecord,
+    HemaDiscipline,
+    HemaGender,
+    HemaMaterial,
+    HemaWeapon,
+)
 from pre_tournament.msgs import render_msg
 from utils import load_withdrawn, normalize_name
 
@@ -79,7 +86,7 @@ def update_sheet_agent_run(
     )
     agent = Agent(
         model=config.model(Step.UPLOAD),
-        model_settings=AnthropicModelSettings(thinking=thinking, max_tokens=16384),
+        model_settings=AnthropicModelSettings(thinking=thinking, max_tokens=64000),
         deps_type=SheetDeps,
         system_prompt=system_prompt,
     )
@@ -434,12 +441,122 @@ def remove_fencers_from_sheets(names: list[str], config: PreConfig) -> dict[str,
 
 
 @observe(capture_input=False, capture_output=False)
+def _parse_discipline_code(token: str) -> HemaDiscipline | None:
+    """Parse one token from the Fencers-tab Disciplines column.
+
+    Mirrors `HemaDiscipline.str()` in reverse: optional 'Plastic '/'Steel '
+    prefix, 2-letter weapon code, optional trailing 'M'/'W' gender suffix.
+    Returns None for tokens that don't resolve to a known weapon.
+    """
+    s = token.strip()
+    if not s:
+        return None
+    material = HemaMaterial.SteelByDefault
+    if s.startswith("Plastic "):
+        material = HemaMaterial.Plastic
+        s = s[len("Plastic "):]
+    elif s.startswith("Steel "):
+        material = HemaMaterial.Steel
+        s = s[len("Steel "):]
+    gender = HemaGender.OpenByDefault
+    if len(s) == 3 and s[-1] in ("M", "W"):
+        gender = HemaGender.Man if s[-1] == "M" else HemaGender.Woman
+        s = s[:-1]
+    try:
+        return HemaDiscipline(weapon=HemaWeapon(s), gender=gender, material=material)
+    except ValueError:
+        return None
+
+
+def _read_fencers_tab_as_records(
+    sh: gspread.Spreadsheet,
+) -> list[FencerRecord]:
+    """Read the Fencers tab and return a minimal FencerRecord list.
+
+    Used as the canonical source for per-discipline tab writes so that
+    manual additions/removals on the Fencers tab propagate to SA/SB/etc.
+    Only the fields the discipline writers consume are populated
+    (name, nationality, club, hr_id, disciplines); the rest get sentinels.
+    """
+    ws = sh.worksheet(FENCERS_WORKSHEET)
+    rows = ws.get_all_values()
+    if len(rows) < 2:
+        return []
+    header = [c.strip() for c in rows[0]]
+
+    def col(*names: str) -> int | None:
+        for n in names:
+            if n in header:
+                return header.index(n)
+        return None
+
+    i_name = col("Name")
+    i_nat  = col("Nat.", "Nationality")
+    i_club = col("Club")
+    i_hrid = col("HR_ID", "HRID")
+    i_disc = col("Disciplines", "Disc.")
+
+    if i_name is None or i_disc is None:
+        raise ValueError(
+            f"Fencers tab is missing required column(s) — "
+            f"need Name and Disciplines, got header: {header}"
+        )
+
+    out: list[FencerRecord] = []
+    for r in rows[1:]:
+        if i_name >= len(r) or not r[i_name].strip():
+            continue
+        name = r[i_name].strip()
+        nat = r[i_nat].strip() if i_nat is not None and i_nat < len(r) else ""
+        club_raw = r[i_club].strip() if i_club is not None and i_club < len(r) else ""
+        hrid_raw = r[i_hrid].strip() if i_hrid is not None and i_hrid < len(r) else ""
+        disc_raw = r[i_disc].strip() if i_disc < len(r) else ""
+
+        try:
+            hr_id = int(hrid_raw) if hrid_raw else None
+        except ValueError:
+            hr_id = None
+        disciplines = [
+            d for d in (_parse_discipline_code(t) for t in disc_raw.split(","))
+            if d is not None
+        ]
+        if not disciplines:
+            # Without disciplines they don't belong on any discipline tab.
+            logger.debug("Skipping '%s' from sheet: no parseable disciplines (%r)", name, disc_raw)
+            continue
+
+        out.append(FencerRecord(
+            registration_time="",
+            name=name,
+            reg_name=None,
+            nationality=nat,
+            email=None,
+            club=club_raw or None,
+            hr_id=hr_id,
+            disciplines=disciplines,
+            after_party=None,
+            notes=None,
+            problems=None,
+        ))
+    logger.info("Loaded %d fencer(s) from Fencers tab for discipline upload", len(out))
+    return out
+
+
 def upload_results(
     fencers: list[FencerRecord],
     ratings: dict[int, dict[str, FencerRating]],
     config: PreConfig,
 ) -> None:
-    """Upload enriched fencer data to the output Google Sheet."""
+    """Upload enriched fencer data to the output Google Sheet.
+
+    Two-stage roster handling so manual edits to the Fencers tab stick:
+      1. The disk list (post-withdrawal filter) drives the LLM-merged write
+         of the Fencers tab — that's where new fencers get added and manual
+         corrections are preserved (per the step6 fencers-prompt rules).
+      2. Per-discipline tabs are then written from the *post-merge Fencers
+         tab*, not the disk list. Manual additions on Fencers propagate to
+         SA/SB; manual removals from Fencers drop out of the discipline tabs.
+    """
     if not config.output_sheet_url:
         raise ValueError("output_sheet_url is not set in user config — set it before uploading.")
 
@@ -465,9 +582,15 @@ def upload_results(
     upload_fencers(fencers, config, sh)
     logger.info("Fencers done")
 
+    # Re-read the just-merged Fencers tab; it is the canonical roster for
+    # discipline writes — manual adds/removals there now drive SA/SB/etc.
+    sheet_fencers = _read_fencers_tab_as_records(sh)
+
+    create_discipline_worksheets(config, sh, sheet_fencers, ratings)
+
     for discipline in config.disciplines:
         logger.info(f"Uploading {discipline} ...")
-        upload_discipline(discipline, fencers, ratings, config, sh)
+        upload_discipline(discipline, sheet_fencers, ratings, config, sh)
         recalculate_seeds(sh.worksheet(discipline))
         logger.info(f"{discipline} done")
 
