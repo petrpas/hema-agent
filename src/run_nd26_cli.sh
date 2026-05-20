@@ -94,7 +94,7 @@ return 0 2>/dev/null || true
 ###############################################################################
 # cli render-lists --allow-remote                  # [remote] Fencers + per-discipline PNGs from the output sheet
 #   prereq: output_sheet_url set + the relevant tabs populated (init-sheet/upload)
-# cli render-declaration --date "15.06.2026"       # [offline] participant declaration PDF from fencers_deduped.json
+# cli render-declaration --date "15.06.2026" --allow-remote   # [remote] declaration PDF from the Fencers tab
 
 ###############################################################################
 # 2. POOLS  (pool_alch_agent; disciplines: SA=sabre, SB=sword & buckler)

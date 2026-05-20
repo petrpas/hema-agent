@@ -17,3 +17,4 @@
 - [2026-05-12 22:23 UTC] Tournament: Tvarůžkův týmový turnajík 2026 | Language: EN | Disciplines: SA
 - [2026-05-13 19:00 UTC] Tournament: Bruner Stich | Language: EN | Disciplines: LSM, LSW
 - [2026-05-13 19:38 UTC] Tournament: Bruner Stich | Language: EN | Disciplines: LSM, LSW
+- [2026-05-20 20:41 UTC] Tournament: Na Duel! 2026 | Language: EN | Disciplines: SA, SB
